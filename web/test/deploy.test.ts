@@ -38,8 +38,8 @@ describe("deploy payload", () => {
     expect(() => deployInput(form({ amount: "0" }))).toThrow(/amount/);
     expect(() => deployInput(form({ decimals: "0", amount: "18446744073709551616" }))).toThrow(/2\^64/);
   });
-  it("the token's names: its id <txid>_0 (BRC-162 Token identification); its topic tm_mandala_<txid>_0 and lookup ls_mandala_<txid>_0 (BRC-207)", () => {
-    expect(namesOf(txid.toUpperCase())).toEqual({ tokenId: `${txid}_0`, topic: `tm_mandala_${txid}_0`, lookup: `ls_mandala_${txid}_0` });
+  it("the token's names: its id <txid>_0 (BRC-162 Token identification); its topic tm_color_<txid>_0 and lookup ls_color_<txid>_0 (BRC-207)", () => {
+    expect(namesOf(txid.toUpperCase())).toEqual({ tokenId: `${txid}_0`, topic: `tm_color_${txid}_0`, lookup: `ls_color_${txid}_0` });
   });
   it("the SDK action builds the deploy from it: output 0, the payload as given", async () => {
     const proto = new ProtoWallet(PrivateKey.fromHex("01".repeat(32)));

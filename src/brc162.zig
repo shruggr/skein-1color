@@ -218,7 +218,7 @@ pub const Metadata = struct {
 /// The display fields of a deploy's payload: a DAG-CBOR map that may carry `sym` (a text string),
 /// `dec` (an unsigned integer 0..18) and `icon` (an array of exactly two items, untagged: a text
 /// string, the media type, and a byte string, the image), as
-/// @1sat/templates' `Mandala` reads them (`metadataOf`): a malformed attribute is absent, the
+/// @1sat/templates reads them (`metadataOf`): a malformed attribute is absent, the
 /// others unaffected, other keys ignored. A payload that is not one DAG-CBOR map (strict: minimal
 /// lengths, definite lengths, text keys, no duplicate key, nothing after it) has none.
 pub fn metadataOf(payload: []const u8) Metadata {

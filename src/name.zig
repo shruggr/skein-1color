@@ -2,26 +2,27 @@
 //! contract"; David Case, 2026-10-08). The topic is the token's: any overlay
 //! for the same token admits the same set.
 //!
-//! A token's topic is `tm_mandala_<assetId>` and its lookup service
-//! `ls_mandala_<assetId>`, the asset id being its token id string
+//! A token's topic is `tm_color_<assetId>` and its lookup service
+//! `ls_color_<assetId>`, the asset id being its token id string
 //! `<txid>_<vout>` for every token, `_0` included, where <txid> is the deploy
 //! txid as 64 lowercase hex characters in display order and <vout> the deploy
 //! output, decimal without leading zeros:
 //!
 //! - A token deployed at output 0 (`native`), under BRC-162 or under
-//!   BRC-161: `tm_mandala_<txid>_0`. On the wire its id is the bare 32-byte
+//!   BRC-161: `tm_color_<txid>_0`. On the wire its id is the bare 32-byte
 //!   txid. BRC-162 "Token identification": a BRC-161 token deployed at
 //!   output 0 is the same token in both forms, with the 32-byte id.
 //! - A token deployed under BRC-161 at a non-zero output (`legacy`):
-//!   `tm_mandala_<txid>_<vout>`. Its binary outputs carry the 36-byte id
+//!   `tm_color_<txid>_<vout>`. Its binary outputs carry the 36-byte id
 //!   (BRC-162: only such a token has one).
 //!
-//! These replace `tm_<txid>_<vout>` (0.8.2) with no alias: `tm_<txid>_<vout>`
-//! is no topic of ours. The discovery topic `tm_mandala` and its lookup
-//! `ls_mandala_deploys` keep their names (neither carries an asset id: a
-//! token topic is `tm_mandala_` followed by one).
+//! The discovery topic is `tm_color` and its lookup `ls_color_deploys`
+//! (neither carries an asset id: a token topic is `tm_color_` followed by
+//! one). These are BRC-207's wire names (0.10.0, the 1Color rename; David
+//! Case, 2026-10-15, shruggr/skein#120), with no alias: the names before
+//! them, and `tm_<txid>_<vout>` (0.8.2), are no topic or lookup of ours.
 //!
-//! A token id string is `<txid>_<vout>` for every token, Mandala and legacy
+//! A token id string is `<txid>_<vout>` for every token, 1Color and legacy
 //! BSV-21 alike, `_0` included (David, 2026-10-07, shruggr/skein#120; BRC-162
 //! "Token identification": "For display and APIs, the string form is
 //! `<txid>_<vout>`"); the bare 32-byte txid is the wire form only.
@@ -32,14 +33,14 @@
 //! Only `std` is imported here.
 const std = @import("std");
 
-/// A token's topic: `tm_mandala_<assetId>` (BRC-207).
-pub const topic_prefix = "tm_mandala_";
-/// A token's lookup service: `ls_mandala_<assetId>` (BRC-207).
-pub const lookup_prefix = "ls_mandala_";
+/// A token's topic: `tm_color_<assetId>` (BRC-207).
+pub const topic_prefix = "tm_color_";
+/// A token's lookup service: `ls_color_<assetId>` (BRC-207).
+pub const lookup_prefix = "ls_color_";
 /// The discovery topic (shruggr/skein#120 item 11): every token's deploy output, one topic.
-pub const deploys_topic = "tm_mandala";
+pub const deploys_topic = "tm_color";
 /// Its lookup service.
-pub const deploys_service = "ls_mandala_deploys";
+pub const deploys_service = "ls_color_deploys";
 
 /// The longest `<txid>_<vout>` suffix: 64 hex, `_`, 10 digits.
 pub const max_suffix_len = 64 + 1 + 10;
@@ -86,8 +87,8 @@ fn idAfter(prefix: []const u8, name: []const u8) ?TokenId {
 /// The token a token id string names: `<txid>` (output 0), `<txid>_<vout>` or the BRC-36
 /// `<txid>.<vout>` (64 lowercase hex in display order; the vout decimal without leading
 /// zeros). Every form of one token names the same token and the same topic. Vout 0 is a token deployed at output 0
-/// (`tm_mandala_<txid>_0`, BRC-162 or BRC-161), any other vout a BRC-161 token deployed there
-/// (`tm_mandala_<txid>_<vout>`). Null for anything else.
+/// (`tm_color_<txid>_0`, BRC-162 or BRC-161), any other vout a BRC-161 token deployed there
+/// (`tm_color_<txid>_<vout>`). Null for anything else.
 pub fn tokenIdOfString(s: []const u8) ?TokenId {
     if (s.len == 64) return .{ .txid = idOfHex(s) orelse return null };
     if (s.len < 66 or (s[64] != '_' and s[64] != '.')) return null;
@@ -107,16 +108,16 @@ pub fn tokenIdText(buf: *[max_suffix_len]u8, id: TokenId) []const u8 {
     return std.fmt.bufPrint(buf, "{s}_{d}", .{ &hex, id.vout }) catch unreachable;
 }
 
-/// The token a topic name carries: `tm_mandala_<txid>_<vout>` (`_0` native, any
+/// The token a topic name carries: `tm_color_<txid>_<vout>` (`_0` native, any
 /// other vout legacy). Null for anything else, including the discovery topic
-/// `tm_mandala`, the old `tm_<txid>_<vout>` (0.8.2) and bare `tm_<txid>`, and
+/// `tm_color`, the old `tm_<txid>_<vout>` (0.8.2) and bare `tm_<txid>`, and
 /// `tm_amm_<txid>`.
 pub fn tokenIdOf(topic: []const u8) ?TokenId {
     return idAfter(topic_prefix, topic);
 }
 
-/// The token a lookup service name carries: `ls_mandala_<txid>_<vout>`. Null for anything
-/// else, including `ls_mandala` and the discovery lookup `ls_mandala_deploys`.
+/// The token a lookup service name carries: `ls_color_<txid>_<vout>`. Null for anything
+/// else, including `ls_color` and the discovery lookup `ls_color_deploys`.
 pub fn tokenIdOfLookup(service: []const u8) ?TokenId {
     return idAfter(lookup_prefix, service);
 }
@@ -129,13 +130,13 @@ fn nameOf(buf: []u8, prefix: []const u8, id: TokenId) []const u8 {
     return std.fmt.bufPrint(buf, "{s}{s}_{d}", .{ prefix, &hex, id.vout }) catch unreachable;
 }
 
-/// The topic name of token `id`: `tm_mandala_<txid>_<vout>`, `tm_mandala_<txid>_0` at output 0
+/// The topic name of token `id`: `tm_color_<txid>_<vout>`, `tm_color_<txid>_0` at output 0
 /// whatever its kind.
 pub fn topicName(buf: *[max_topic_len]u8, id: TokenId) []const u8 {
     return nameOf(buf, topic_prefix, id);
 }
 
-/// The lookup service name of token `id`: `ls_mandala_<txid>_<vout>`.
+/// The lookup service name of token `id`: `ls_color_<txid>_<vout>`.
 pub fn lookupName(buf: *[max_lookup_len]u8, id: TokenId) []const u8 {
     return nameOf(buf, lookup_prefix, id);
 }

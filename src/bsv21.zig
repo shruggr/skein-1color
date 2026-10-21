@@ -10,13 +10,13 @@
 //!
 //! Which outputs are this token's (`tokenOf`), by its deploy output (BRC-162
 //! "Token identification"):
-//! - deployed at output 0 (`tm_mandala_<txid>_0`): the genesis is output 0 of the
+//! - deployed at output 0 (`tm_color_<txid>_0`): the genesis is output 0 of the
 //!   deploy txid, a BRC-162 deploy or a BRC-161 `deploy+mint` /
 //!   `deploy+auth` inscription (the same token in both forms); later outputs
 //!   are binary with the 32-byte id, or JSON with `id` `<txid>_0`. A token
 //!   deployed in binary never has a JSON output admitted: its coins are
 //!   binary, and the one-way migration rule refuses JSON beside them.
-//! - deployed under BRC-161 at a non-zero output (`tm_mandala_<txid>_<vout>`): the
+//! - deployed under BRC-161 at a non-zero output (`tm_color_<txid>_<vout>`): the
 //!   genesis is the inscription at the deploy outpoint (a binary deploy is
 //!   never its genesis); later outputs are JSON with `id` `<txid>_<vout>`, or
 //!   binary with the 36-byte id.

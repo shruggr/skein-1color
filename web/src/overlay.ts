@@ -16,9 +16,9 @@
  *   resubmission polls it).
  * - `POST <app base>/lookup {service, query}` →
  *   `{type: "output-list", outputs: [{beef, outputIndex}]}`.
- * - `GET <app base>/mandala/tokens?limit&skip` (a read, plain fetch): the
- *   deploys `tm_mandala` admitted, `[{tokenId, topic, sym, dec, icon?, txid,
- *   vout}]`, `icon` a Mandala deploy's embedded image as a data URL (a BRC-161
+ * - `GET <app base>/color/tokens?limit&skip` (a read, plain fetch): the
+ *   deploys `tm_color` admitted, `[{tokenId, topic, sym, dec, icon?, txid,
+ *   vout}]`, `icon` a 1Color deploy's embedded image as a data URL (a BRC-161
  *   JSON deploy's icon string as written).
  *
  * `<app base>` is `<base>/<app>` (the page's place, src/where.ts). The engine
@@ -31,7 +31,7 @@ import { DISCOVERY } from "./tokens/list";
 
 export { DISCOVERY };
 
-export const DEPLOYS_LOOKUP = "ls_mandala_deploys";
+export const DEPLOYS_LOOKUP = "ls_color_deploys";
 
 export type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
 
@@ -81,10 +81,10 @@ export async function submitBeef(appBase: string, beef: ArrayLike<number>, topic
   return took.length ? `admitted under ${took.join("; ")}` : "taken by no topic";
 }
 
-/** The token a topic serves: `tm_mandala_<assetId>`, `tm_mandala_<txid>_<vout>` → `<txid>_<vout>`, `_0` included (BRC-207; BRC-162 "Token identification"). */
+/** The token a topic serves: `tm_color_<assetId>`, `tm_color_<txid>_<vout>` → `<txid>_<vout>`, `_0` included (BRC-207; BRC-162 "Token identification"). */
 export function tokenOfTopic(topic: string): { tokenId: string; txid: string; vout: number } {
-  const m = /^tm_mandala_([0-9a-f]{64})_(0|[1-9]\d*)$/.exec(topic);
-  if (!m) throw new Error(`${topic}: not a token's topic (tm_mandala_<txid>_<vout>)`);
+  const m = /^tm_color_([0-9a-f]{64})_(0|[1-9]\d*)$/.exec(topic);
+  if (!m) throw new Error(`${topic}: not a token's topic (tm_color_<txid>_<vout>)`);
   const vout = Number(m[2]);
   return { tokenId: `${m[1]}_${vout}`, txid: m[1]!, vout };
 }
@@ -151,13 +151,13 @@ export async function submitWalletDeploy(appBase: string, topic: string, wallet:
   return { answer: await submitBeef(appBase, beef, topics, submitF), via: "wallet", topics };
 }
 
-/** One deploy on the token list (`/<app>/mandala/tokens`). */
+/** One deploy on the token list (`/<app>/color/tokens`). */
 export interface Listed {
   tokenId: string;
   topic: string;
   sym: string;
   dec: number;
-  /** A Mandala deploy's embedded image, `data:<mediaType>;base64,…`; a BRC-161 JSON deploy's icon string as written. */
+  /** A 1Color deploy's embedded image, `data:<mediaType>;base64,…`; a BRC-161 JSON deploy's icon string as written. */
   icon?: string;
   txid: string;
   vout: number;
@@ -167,11 +167,11 @@ export interface Listed {
 export async function listTokens(appBase: string, f: Fetch = plainFetch, pages = 10): Promise<Listed[]> {
   const out: Listed[] = [];
   for (let i = 0; i < pages; i++) {
-    const r = await f(`${appBase}/mandala/tokens?limit=100&skip=${i * 100}`, { method: "GET" });
+    const r = await f(`${appBase}/color/tokens?limit=100&skip=${i * 100}`, { method: "GET" });
     const text = await r.text();
-    if (r.status !== 200) throw new Error(`mandala/tokens: HTTP ${r.status} ${text.slice(0, 200)}`);
+    if (r.status !== 200) throw new Error(`color/tokens: HTTP ${r.status} ${text.slice(0, 200)}`);
     const page = JSON.parse(text) as Listed[];
-    if (!Array.isArray(page)) throw new Error(`mandala/tokens: not a list: ${text.slice(0, 200)}`);
+    if (!Array.isArray(page)) throw new Error(`color/tokens: not a list: ${text.slice(0, 200)}`);
     out.push(...page);
     if (page.length < 100) break;
   }

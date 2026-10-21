@@ -24,7 +24,7 @@ if (!existsSync(resolve(skein, "src/client/raw.ts"))) {
 }
 
 export default defineConfig({
-  // Relative: the pages are served under /<app>/mandala/ on any instance.
+  // Relative: the pages are served under /<app>/color/ on any instance.
   base: "./",
   plugins: [react()],
   resolve: {

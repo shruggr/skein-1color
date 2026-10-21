@@ -6,10 +6,10 @@
  * box `<app>/register` (skein-overlay 0.7.7+; the route's handler
  * `overlay.register` is gated by root, skein-overlay 0.10.0). A token is two
  * registrations (BRC-207; David Case, 2026-10-08): `register` of its topic
- * `tm_mandala_<assetId>`, then `registerLookup` of `ls_mandala_<assetId>`
+ * `tm_color_<assetId>`, then `registerLookup` of `ls_color_<assetId>`
  * (skein-overlay 0.11.0); deregistering reverses both. Each token shows its
- * symbol and icon from its deploy (the read `/<app>/mandala/tokens`: a
- * Mandala deploy's embedded image as a data URL).
+ * symbol and icon from its deploy (the read `/<app>/color/tokens`: a
+ * 1Color deploy's embedded image as a data URL).
  * A token's register seeds its topic with the token's deploy (skein-overlay
  * 0.7.8, `seed: [<deploy txid>]`): the engine judges it from what the
  * instance's chain state holds, and the answer says `seeded` or `missing`.
@@ -125,7 +125,7 @@ function TokensPage() {
     setBusy("");
   }
 
-  if (!where) return <p className="bad">This page is served at <code>/&lt;app&gt;/mandala/tokens/</code>; its URL names no app.</p>;
+  if (!where) return <p className="bad">This page is served at <code>/&lt;app&gt;/color/tokens/</code>; its URL names no app.</p>;
   let idProblem = "";
   try { register(topic); } catch (e) { idProblem = (e as Error).message; }
   const tokenTopics = (topics ?? []).filter((t) => t !== DISCOVERY);
@@ -134,7 +134,7 @@ function TokensPage() {
   return (
     <>
       <h1>Tokens on this overlay</h1>
-      <p className="mut small">The overlay serves only the tokens registered with it, each a topic <code>tm_mandala_&lt;assetId&gt;</code> and its lookup <code>ls_mandala_&lt;assetId&gt;</code> (BRC-207), the asset id the token's id: <code>&lt;txid&gt;_0</code> for a token deployed at output 0, <code>&lt;txid&gt;_&lt;vout&gt;</code> for a BRC-161 token at another output. The deploy page shows the topic of a new token. Changing it is root's (the key that claimed the instance, or one root granted): messages from your wallet to the box <code>{where.app}/register</code> of <code>{where.base}</code>.</p>
+      <p className="mut small">The overlay serves only the tokens registered with it, each a topic <code>tm_color_&lt;assetId&gt;</code> and its lookup <code>ls_color_&lt;assetId&gt;</code> (BRC-207), the asset id the token's id: <code>&lt;txid&gt;_0</code> for a token deployed at output 0, <code>&lt;txid&gt;_&lt;vout&gt;</code> for a BRC-161 token at another output. The deploy page shows the topic of a new token. Changing it is root's (the key that claimed the instance, or one root granted): messages from your wallet to the box <code>{where.app}/register</code> of <code>{where.base}</code>.</p>
       {status !== "connected" && <p className="mut">Connect the wallet holding root on this skein.</p>}
       {readErr && <p className="status bad">The list: <Ids text={readErr} /></p>}
       {inst && (
@@ -142,7 +142,7 @@ function TokensPage() {
           <div className="card">
             <h2>Register a topic</h2>
             <form className="row" onSubmit={(e) => { e.preventDefault(); if (!idProblem) void run("register", registerToken(topic)); }}>
-              <input type="text" value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="tm_mandala_<txid>_<vout>" />
+              <input type="text" value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="tm_color_<txid>_<vout>" />
               <button type="submit" className="go" disabled={!!busy || !!idProblem}>{busy === "register" ? "Registering…" : "Register"}</button>
             </form>
             {topic && idProblem && <p className="mut small">{idProblem}</p>}
@@ -172,10 +172,10 @@ function TokensPage() {
             <h2>Discovery</h2>
             <label className="inline">
               <input type="checkbox" checked={discoveryOn} disabled={!!busy || topics === undefined} onChange={(e) => void run("discovery", [discovery(e.target.checked)])} />
-              Serve <code>{DISCOVERY}</code>: every token's deploy output, so the metadata each token was deployed with can be found (lookup <code>ls_mandala_deploys</code>).
+              Serve <code>{DISCOVERY}</code>: every token's deploy output, so the metadata each token was deployed with can be found (lookup <code>ls_color_deploys</code>).
             </label>
           </div>
-          <p className="mut small">This overlay is a market and a validator for every registered token, always: registering a token starts both (the beats on <code>tm_mandala_&lt;assetId&gt;-live</code>), deregistering stops them.</p>
+          <p className="mut small">This overlay is a market and a validator for every registered token, always: registering a token starts both (the beats on <code>tm_color_&lt;assetId&gt;-live</code>), deregistering stops them.</p>
           {busy && <p className="status wait">{busy.startsWith("submit:") || busy.endsWith(":submit") ? "Submitting the deploy…" : "Sent; waiting for the answer…"}</p>}
           {note && <p className={`status ${note.ok ? "ok" : "bad"}`}><Ids text={note.text} /></p>}
         </>
@@ -184,7 +184,7 @@ function TokensPage() {
   );
 }
 
-/** A token's icon and symbol from its deploy: a Mandala deploy's embedded image (a data URL); none otherwise. */
+/** A token's icon and symbol from its deploy: a 1Color deploy's embedded image (a data URL); none otherwise. */
 function TokenIcon({ t }: { t?: Listed }) {
   if (!t) return null;
   const img = t.icon?.startsWith("data:") ? t.icon : undefined;

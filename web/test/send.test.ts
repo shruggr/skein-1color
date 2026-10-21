@@ -21,7 +21,7 @@ describe("root's message", () => {
       sent.push({ url, init });
       return new Response(dagCbor.encode({ status: "success", id: "bafyreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy" }) as unknown as BodyInit, { status: 200 });
     };
-    const id = await inst.send("amm/register", register(`tm_mandala_${"ef".repeat(32)}_0`));
+    const id = await inst.send("amm/register", register(`tm_color_${"ef".repeat(32)}_0`));
     expect(id).toBe("bafyreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy");
     expect(sent).toHaveLength(1);
     expect(sent[0]!.url).toBe("http://127.0.0.1:8100/@alice/sendMessage");
@@ -29,6 +29,6 @@ describe("root's message", () => {
     const m = (dagCbor.decode(sent[0]!.init.body) as { message: { recipient: Uint8Array; messageBox: string; body: Uint8Array } }).message;
     expect(Buffer.from(m.recipient).toString("hex")).toBe(identity);
     expect(m.messageBox).toBe("amm/register");
-    expect(dagCbor.decode(m.body)).toEqual({ fn: "register", args: { topic: `tm_mandala_${"ef".repeat(32)}_0`, program: "mandala-topic", seed: ["ef".repeat(32)] } });
+    expect(dagCbor.decode(m.body)).toEqual({ fn: "register", args: { topic: `tm_color_${"ef".repeat(32)}_0`, program: "color-topic", seed: ["ef".repeat(32)] } });
   });
 });

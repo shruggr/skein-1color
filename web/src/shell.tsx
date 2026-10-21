@@ -24,13 +24,13 @@ export function mount(title: string, page: ReactNode) {
   const where = whereOf(location.href);
   const root = document.getElementById("root");
   if (!root) throw new Error("missing #root");
-  document.title = `${title} · Mandala`;
+  document.title = `${title} · 1Color`;
   createRoot(root).render(
     <StrictMode>
       <WalletProvider autoDetect autoReconnect>
         <ConnectDialogProvider>
           <header className="top">
-            <span className="home">Mandala{where ? <span className="mut"> · {where.app}</span> : null}</span>
+            <span className="home">1Color{where ? <span className="mut"> · {where.app}</span> : null}</span>
             <a href="../deploy/">Deploy a token</a>
             <a href="../tokens/">Tokens on this overlay</a>
             <Who />

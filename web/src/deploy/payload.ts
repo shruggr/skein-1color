@@ -66,13 +66,13 @@ export function deployInput(f: DeployForm): DeployMandalaInput {
 }
 
 /**
- * The names a Mandala deploy gives the token: its id `<txid>_0` (every token
+ * The names a 1Color deploy gives the token: its id `<txid>_0` (every token
  * is `<txid>_<vout>`, `_0` included; the bare txid is the wire form only:
  * BRC-162 "Token identification", David 2026-10-07), and the overlay topic
- * and lookup root registers, `tm_mandala_<assetId>` and `ls_mandala_<assetId>`
+ * and lookup root registers, `tm_color_<assetId>` and `ls_color_<assetId>`
  * (BRC-207; David Case, 2026-10-08).
  */
 export function namesOf(txid: string): { tokenId: string; topic: string; lookup: string } {
   const t = txid.toLowerCase();
-  return { tokenId: `${t}_0`, topic: `tm_mandala_${t}_0`, lookup: `ls_mandala_${t}_0` };
+  return { tokenId: `${t}_0`, topic: `tm_color_${t}_0`, lookup: `ls_color_${t}_0` };
 }

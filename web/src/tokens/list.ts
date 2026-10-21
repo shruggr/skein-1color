@@ -5,8 +5,8 @@
  * them, the answers. Pure; the page sends and reads.
  *
  * A token is two registrations (BRC-207; David Case, 2026-10-08): its topic
- * `tm_mandala_<assetId>` (judged by mandala-topic) and its lookup
- * `ls_mandala_<assetId>` (answered by mandala-lookup), the asset id
+ * `tm_color_<assetId>` (judged by color-topic) and its lookup
+ * `ls_color_<assetId>` (answered by color-lookup), the asset id
  * `<txid>_<vout>` (`<txid>_0` at output 0). Registered in that order,
  * deregistered in the reverse (`registerToken`, `deregisterToken`).
  *
@@ -14,10 +14,10 @@
  * topics: [{topic, program}]}`; the lookup set `<app>/lookups`, `{kind:
  * "overlay-lookups", lookups: [{service, program, topics?}]}`. Messages to the
  * app's box `<app>/register` (skein-overlay 0.7.7): `{fn: "register", args:
- * {topic, program: "mandala-topic", seed?}}`, `{fn: "deregister", args:
+ * {topic, program: "color-topic", seed?}}`, `{fn: "deregister", args:
  * {topic}}`, `{fn: "registerLookup", args: {service, program:
- * "mandala-lookup", topics}}`, `{fn: "deregisterLookup", args: {service}}`;
- * the topic a token's `tm_mandala_<txid>_<vout>` or `tm_mandala`. A token's register seeds its topic with its deploy
+ * "color-lookup", topics}}`, `{fn: "deregisterLookup", args: {service}}`;
+ * the topic a token's `tm_color_<txid>_<vout>` or `tm_color`. A token's register seeds its topic with its deploy
  * (skein-overlay 0.7.8): `seed: [<the deploy txid>]`, judged from what the
  * instance's chain state holds. The step's answer is its result record (its
  * CID on stdout): `{kind: "overlay-result", op, topic, active, changed,
@@ -25,14 +25,14 @@
  * refusal.
  */
 
-export const DISCOVERY = "tm_mandala";
-/** The role in the app's `programs` that judges a Mandala topic. */
-export const PROGRAM = "mandala-topic";
-/** The role in the app's `programs` that answers a token's lookup (`ls_mandala_<assetId>`). */
-export const LOOKUP_PROGRAM = "mandala-lookup";
+export const DISCOVERY = "tm_color";
+/** The role in the app's `programs` that judges a 1Color topic. */
+export const PROGRAM = "color-topic";
+/** The role in the app's `programs` that answers a token's lookup (`ls_color_<assetId>`). */
+export const LOOKUP_PROGRAM = "color-lookup";
 /** A token's topic and lookup: the prefix before its asset id (BRC-207). */
-export const TOPIC_PREFIX = "tm_mandala_";
-export const LOOKUP_PREFIX = "ls_mandala_";
+export const TOPIC_PREFIX = "tm_color_";
+export const LOOKUP_PREFIX = "ls_color_";
 
 export type Call =
   | { fn: "register"; args: { topic: string; program: string; seed?: string[] } }
@@ -40,11 +40,11 @@ export type Call =
   | { fn: "registerLookup"; args: { service: string; program: string; topics: string[] } }
   | { fn: "deregisterLookup"; args: { service: string } };
 
-const TOKEN_TOPIC = /^tm_mandala_([0-9a-f]{64})_(0|[1-9]\d*)$/;
+const TOKEN_TOPIC = /^tm_color_([0-9a-f]{64})_(0|[1-9]\d*)$/;
 
 /**
- * A token's topic as typed: `tm_mandala_<assetId>`, `tm_mandala_<txid>_<vout>` for
- * every token (`tm_mandala_<txid>_0` a token deployed at output 0, any other
+ * A token's topic as typed: `tm_color_<assetId>`, `tm_color_<txid>_<vout>` for
+ * every token (`tm_color_<txid>_0` a token deployed at output 0, any other
  * vout a BRC-161 token deployed there); 64 lowercase hex. The old
  * `tm_<txid>_<vout>` is no topic (no alias).
  */
@@ -52,33 +52,33 @@ export function tokenTopicOf(text: string): string {
   const t = text.trim();
   const m = TOKEN_TOPIC.exec(t);
   if (!m || Number(m[2]) > 0xffffffff) {
-    throw new Error("a token's topic: tm_mandala_<txid>_<vout> (64 lowercase hex characters; tm_mandala_<txid>_0 at output 0)");
+    throw new Error("a token's topic: tm_color_<txid>_<vout> (64 lowercase hex characters; tm_color_<txid>_0 at output 0)");
   }
   return t;
 }
 
-/** The asset id a token's topic names: `tm_mandala_<txid>_<vout>` → `<txid>_<vout>`. */
+/** The asset id a token's topic names: `tm_color_<txid>_<vout>` → `<txid>_<vout>`. */
 export function assetIdOf(topic: string): string {
   return tokenTopicOf(topic).slice(TOPIC_PREFIX.length);
 }
 
-/** The deploy txid a token's topic names: `tm_mandala_<txid>_<vout>` → `<txid>`. */
+/** The deploy txid a token's topic names: `tm_color_<txid>_<vout>` → `<txid>`. */
 export function deployTxidOf(topic: string): string {
   return assetIdOf(topic).slice(0, 64);
 }
 
-/** A token's lookup service, beside its topic: `tm_mandala_<assetId>` → `ls_mandala_<assetId>`. */
+/** A token's lookup service, beside its topic: `tm_color_<assetId>` → `ls_color_<assetId>`. */
 export function lookupOf(topic: string): string {
   return LOOKUP_PREFIX + assetIdOf(topic);
 }
 
-/** Register a token's topic, judged by mandala-topic, seeded with its deploy (skein-overlay 0.7.8). */
+/** Register a token's topic, judged by color-topic, seeded with its deploy (skein-overlay 0.7.8). */
 export function register(topic: string): Call {
   const t = tokenTopicOf(topic);
   return { fn: "register", args: { topic: t, program: PROGRAM, seed: [deployTxidOf(t)] } };
 }
 
-/** Register a token's lookup `ls_mandala_<assetId>`, answered by mandala-lookup, hearing its topic (skein-overlay 0.11.0). */
+/** Register a token's lookup `ls_color_<assetId>`, answered by color-lookup, hearing its topic (skein-overlay 0.11.0). */
 export function registerLookup(topic: string): Call {
   const t = tokenTopicOf(topic);
   return { fn: "registerLookup", args: { service: lookupOf(t), program: LOOKUP_PROGRAM, topics: [t] } };
@@ -121,12 +121,12 @@ export function registeredOf(record: unknown): Registered[] {
   return (r.topics as Registered[]).map(({ topic, program }) => ({ topic, program }));
 }
 
-/** The topics of the set that mandala-topic judges. */
+/** The topics of the set that color-topic judges. */
 export function topicsOf(record: unknown): string[] {
   return registeredOf(record).filter((e) => e.program === PROGRAM).map((e) => e.topic);
 }
 
-/** The registered lookup set's record (`<app>/lookups`): the services mandala-lookup answers; [] for none. */
+/** The registered lookup set's record (`<app>/lookups`): the services color-lookup answers; [] for none. */
 export function lookupsOf(record: unknown): string[] {
   if (record === undefined) return [];
   const r = record as { kind?: unknown; lookups?: unknown };

@@ -3,8 +3,8 @@
  * @1sat/actions' `deployMandala` builds the BRC-162 deploy at output 0, the
  * wallet signs and broadcasts it and files it (basket and labels
  * `mandala <txid> 0`). The page then submits the deploy to the overlay it is
- * served from under the discovery topic only (`tm_mandala`): its own topic
- * `tm_mandala_<txid>_0` did not exist before this transaction, so nobody serves it yet.
+ * served from under the discovery topic only (`tm_color`): its own topic
+ * `tm_color_<txid>_0` did not exist before this transaction, so nobody serves it yet.
  * The icon is an image file, embedded in the deploy (`{mediaType, bytes}`,
  * BRC-162 draft bsv-blockchain/BRCs#308).
  * The submit is a plain `fetch`, unsigned: the skein admits an unsigned POST
@@ -84,7 +84,7 @@ function DeployPage() {
   return (
     <>
       <h1>Deploy a token</h1>
-      <p className="mut small">A Mandala (BRC-162) token, made by your wallet: the deploy is output 0 of a transaction your wallet signs and broadcasts, and the token's id is that output. The page then submits the deploy to this overlay's discovery topic <code>{DISCOVERY}</code>; the overlay serves the token itself once its root registers the token's topic.</p>
+      <p className="mut small">A 1Color (BRC-162) token, made by your wallet: the deploy is output 0 of a transaction your wallet signs and broadcasts, and the token's id is that output. The page then submits the deploy to this overlay's discovery topic <code>{DISCOVERY}</code>; the overlay serves the token itself once its root registers the token's topic.</p>
       <div className="card">
         <label>Symbol<input type="text" value={f.symbol} onChange={set("symbol")} placeholder="TOKEN" /></label>
         <label>Decimals (0 to 18)<input type="text" inputMode="numeric" value={f.decimals} onChange={set("decimals")} /></label>
@@ -120,7 +120,7 @@ function DeployPage() {
             <p className="ok small">In your wallet: basket <Id value={`mandala ${done.txid} 0`} />.</p>
           )}
           {done.submitted ? (
-            <p className="ok small">Submitted to this overlay under <code>{DISCOVERY}</code>: <Ids text={done.submitted} />. The discovery topic has the deploy once admitted (lookup <code>ls_mandala_deploys</code>); if this overlay does not serve <code>{DISCOVERY}</code>, nothing admits it.</p>
+            <p className="ok small">Submitted to this overlay under <code>{DISCOVERY}</code>: <Ids text={done.submitted} />. The discovery topic has the deploy once admitted (lookup <code>ls_color_deploys</code>); if this overlay does not serve <code>{DISCOVERY}</code>, nothing admits it.</p>
           ) : done.submitErr ? (
             <p className="status bad">Not submitted to this overlay: <Ids text={done.submitErr} /> <button type="button" disabled={busy} onClick={resubmit}>Submit again</button></p>
           ) : null}

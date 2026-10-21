@@ -1,20 +1,20 @@
 {
   "kind": "app",
-  "name": "mandala",
-  "version": "0.9.2",
+  "name": "1color",
+  "version": "0.10.0",
   "programs": {
     "overlay": "bin/overlay.wasm",
-    "mandala-topic": "bin/mandala-topic.wasm",
-    "mandala-lookup": "bin/mandala-lookup.wasm"
+    "color-topic": "bin/color-topic.wasm",
+    "color-lookup": "bin/color-lookup.wasm"
   },
   "config": {
     "overlay": {
       "lookups": {
-        "ls_mandala": {
-          "program": "mandala-lookup"
+        "ls_color": {
+          "program": "color-lookup"
         },
-        "ls_mandala_deploys": {
-          "program": "mandala-lookup"
+        "ls_color_deploys": {
+          "program": "color-lookup"
         }
       }
     }
@@ -27,7 +27,7 @@
     "listLookupServiceProviders": "overlay.listLookupServiceProviders",
     "topicDocumentation": "overlay.topicDocumentation",
     "lookupDocumentation": "overlay.lookupDocumentation",
-    "tokens": "mandala-lookup.tokens"
+    "tokens": "color-lookup.tokens"
   },
   "roles": {
     "root": [
@@ -78,11 +78,11 @@
     },
     {
       "transport": "http",
-      "address": "/mandala/tokens",
+      "address": "/color/tokens",
       "filters": [
         "tokens"
       ]
     }
   ],
-  "description": "Mandala tokens (BRC-162; BRC-207; docs/MANDALA.md): one overlay topic per token, tm_mandala_<assetId> (the asset id <txid>_<vout>, <txid>_0 at output 0), judged by the token rules alone (mandala-topic), and its lookup ls_mandala_<assetId> (mandala-lookup: BRC-207's mandala-spendability and mandala-admission), both registered at runtime; the discovery topic tm_mandala (every token's deploy output), the lookup service ls_mandala (mandala-lookup: a token's unspent value outputs, its authority outputs, one output by outpoint) and ls_mandala_deploys (a token id's deploy output; a token id is <txid>, <txid>_<vout> or <txid>.<vout>); every name of mandala-lookup reads one index, <app>/ls_mandala; on the overlay engine (shruggr/skein-overlay 0.12.1, required: chain/1). The token list is a read route, /<app>/mandala/tokens (its filter tokens, mandala-lookup fn tokens: anyone, nothing logged; shruggr/skein#143): {limit?, skip?} \u2192 [{tokenId, topic, sym, dec, icon?, txid, vout}], every deploy tm_mandala admitted, newest first; icon a binary deploy's embedded image as a data URL, a BRC-161 JSON deploy's icon string as written. The manifest declares no topics: root registers each token with the engine, two messages in the app's box register (<app>/register once installed; the handler overlay.register, gated by roles: {root: [register, registerLookup, deregisterLookup]}): {fn: \"register\", args: {topic: \"tm_mandala_<assetId>\", program: \"mandala-topic\", seed?}} then {fn: \"registerLookup\", args: {service: \"ls_mandala_<assetId>\", program: \"mandala-lookup\", topics: [\"tm_mandala_<assetId>\"]}}, and drops it with {fn: \"deregisterLookup\", args: {service}} then {fn: \"deregister\", args: {topic}}; tm_mandala by register alone. Every skein is a market and a validator, always (skein-overlay 0.12.0): a registered topic has liveness and a beacon on <topic>-live (its body the topic's view digest), a registered lookup liveness and a beacon on <service>-live. The registered sets are the heads <app>/topics and <app>/lookups. ls_mandala and ls_mandala_deploys listen to every topic the overlay serves."
+  "description": "1Color tokens (BRC-162; BRC-207; docs/1COLOR.md): one overlay topic per token, tm_color_<assetId> (the asset id <txid>_<vout>, <txid>_0 at output 0), judged by the token rules alone (color-topic), and its lookup ls_color_<assetId> (color-lookup: BRC-207's color-spendability and color-admission), both registered at runtime; the discovery topic tm_color (BRC-207 deployment discovery: every token's deploy output), the lookup service ls_color (color-lookup: a token's unspent value outputs, its authority outputs, one output by outpoint) and ls_color_deploys (a token id's deploy output; a token id is <txid>, <txid>_<vout> or <txid>.<vout>); every name of color-lookup reads one index, <app>/ls_color; on the overlay engine (shruggr/skein-overlay 0.14.0, required: chain/1). The token list is a read route, /<app>/color/tokens (its filter tokens, color-lookup fn tokens: anyone, nothing logged; shruggr/skein#143): {limit?, skip?} \u2192 [{tokenId, topic, sym, dec, icon?, txid, vout}], every deploy tm_color admitted, newest first; icon a binary deploy's embedded image as a data URL, a BRC-161 JSON deploy's icon string as written. The manifest declares no topics: root registers each token with the engine, two messages in the app's box register (<app>/register once installed; the handler overlay.register, gated by roles: {root: [register, registerLookup, deregisterLookup]}): {fn: \"register\", args: {topic: \"tm_color_<assetId>\", program: \"color-topic\", seed?}} then {fn: \"registerLookup\", args: {service: \"ls_color_<assetId>\", program: \"color-lookup\", topics: [\"tm_color_<assetId>\"]}}, and drops it with {fn: \"deregisterLookup\", args: {service}} then {fn: \"deregister\", args: {topic}}; tm_color by register alone. Every skein is a market and a validator, always (skein-overlay 0.12.0): a registered topic has liveness and a beacon on <topic>-live (its body the topic's beat: its view digest, and its tip anchor and tail digest, skein-overlay 0.14.0), a registered lookup liveness and a beacon on <service>-live. The registered sets are the heads <app>/topics and <app>/lookups. ls_color and ls_color_deploys listen to every topic the overlay serves."
 }

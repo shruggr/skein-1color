@@ -8,13 +8,13 @@ const std = @import("std");
 const bsv21 = @import("bsv21.zig");
 const name = @import("name.zig");
 
-/// The token a topic name carries (`tm_mandala_<txid>_0` native,
-/// `tm_mandala_<txid>_<vout>` legacy, name.zig), as the rules take it.
+/// The token a topic name carries (`tm_color_<txid>_0` native,
+/// `tm_color_<txid>_<vout>` legacy, name.zig), as the rules take it.
 pub fn tokenIdOf(topic: []const u8) ?bsv21.TokenId {
     return fromName(name.tokenIdOf(topic) orelse return null);
 }
 
-/// The token a lookup service name carries (`ls_mandala_<txid>_<vout>`, name.zig), as the rules take it.
+/// The token a lookup service name carries (`ls_color_<txid>_<vout>`, name.zig), as the rules take it.
 pub fn tokenIdOfLookup(service: []const u8) ?bsv21.TokenId {
     return fromName(name.tokenIdOfLookup(service) orelse return null);
 }
@@ -41,7 +41,7 @@ pub fn deployOf(a: std.mem.Allocator, txid: [32]u8, vout: u32, script: []const u
     return if (t.role == .deploy) id else null;
 }
 
-/// The discovery topic's verdict (`tm_mandala`): every output that is a valid deploy of
+/// The discovery topic's verdict (`tm_color`): every output that is a valid deploy of
 /// any token, nothing else; the coins it spends retained (a registry keeps what it admitted).
 pub fn judgeDeploys(a: std.mem.Allocator, tx: bsv21.Tx, previous_coins: []const u32) !Verdict {
     var admit: std.ArrayList(u32) = .empty;

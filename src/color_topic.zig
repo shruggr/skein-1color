@@ -1,11 +1,11 @@
-//! mandala-topic: the Mandala (BRC-162) topic manager, one topic per token
+//! color-topic: the 1Color (BRC-162) topic manager, one topic per token
 //! (shruggr/skein#120).
 //!
-//! **The topic.** `tm_mandala_<assetId>` (BRC-207; David Case, 2026-10-08):
-//! `tm_mandala_<txid>_0` for a token deployed at output 0 (BRC-162, or
-//! BRC-161 there: the same token), `tm_mandala_<txid>_<vout>` for a BRC-161
+//! **The topic.** `tm_color_<assetId>` (BRC-207; David Case, 2026-10-08):
+//! `tm_color_<txid>_0` for a token deployed at output 0 (BRC-162, or
+//! BRC-161 there: the same token), `tm_color_<txid>_<vout>` for a BRC-161
 //! token deployed at a non-zero output (name.zig), and the discovery topic
-//! `tm_mandala`. `identify` (the skein-overlay topic contract,
+//! `tm_color`. `identify` (the skein-overlay topic contract,
 //! `topic.Call`) admits every output of the topic's token that the BSV-21
 //! rules allow and retains the token coins the transaction spends (token.zig,
 //! bsv21.zig): the protocol only, nothing about governance. `metadata` and
@@ -13,17 +13,17 @@
 //! (skein-overlay#2).
 //!
 //! The topics served are the engine's: the owner registers each with the
-//! overlay engine, `register {topic, program: "mandala-topic"}`, and drops it
+//! overlay engine, `register {topic, program: "color-topic"}`, and drops it
 //! with `deregister {topic}` (skein-overlay 0.6.0 "Register a topic"); a
-//! token's lookup `ls_mandala_<assetId>` beside it with `registerLookup`
+//! token's lookup `ls_color_<assetId>` beside it with `registerLookup`
 //! (skein-overlay 0.11.0).
 const std = @import("std");
 const c = @import("chain");
 const topic = @import("topic");
-const mandala = @import("mandala");
+const color = @import("1color");
 
-const token = mandala.token;
-const bsv21 = mandala.bsv21;
+const token = color.token;
+const bsv21 = color.bsv21;
 
 const Allocator = std.mem.Allocator;
 const eql = std.mem.eql;
@@ -42,7 +42,7 @@ pub fn txOf(a: Allocator, call: topic.Call) !bsv21.Tx {
 }
 
 pub fn identify(a: Allocator, call: topic.Call) anyerror!topic.Instructions {
-    if (eql(u8, call.topic, mandala.name.deploys_topic)) {
+    if (eql(u8, call.topic, color.name.deploys_topic)) {
         const d = try token.judgeDeploys(a, try txOf(a, call), call.previous_coins);
         return .{ .outputs_to_admit = d.outputs_to_admit, .coins_to_retain = d.coins_to_retain };
     }
@@ -52,34 +52,34 @@ pub fn identify(a: Allocator, call: topic.Call) anyerror!topic.Instructions {
 }
 
 pub fn metadata(a: Allocator, t: []const u8) anyerror!topic.Metadata {
-    if (eql(u8, t, mandala.name.deploys_topic)) return .{
-        .short_description = "Mandala token deploys (BRC-162, BRC-161): every token's deploy output, with the metadata it was deployed with.",
+    if (eql(u8, t, color.name.deploys_topic)) return .{
+        .short_description = "1Color token deploys (BRC-162, BRC-161; BRC-207 deployment discovery): every token's deploy output, with the metadata it was deployed with.",
         .version = version,
-        .information_url = "https://github.com/shruggr/skein-mandala",
+        .information_url = "https://github.com/shruggr/skein-1color",
     };
-    const id = token.tokenIdOf(t) orelse return .{ .short_description = "Not a Mandala token topic." };
+    const id = token.tokenIdOf(t) orelse return .{ .short_description = "Not a 1Color token topic." };
     var r = id.txid;
     std.mem.reverse(u8, &r);
     return .{
         // The token by its id string, `<txid>_<vout>` (`_0` included; BRC-162 "Token identification").
         .short_description = if (id.vout == 0)
-            try std.fmt.allocPrint(a, "Mandala token {s}_0 (BRC-162): its outputs as the token rules allow.", .{&std.fmt.bytesToHex(r, .lower)})
+            try std.fmt.allocPrint(a, "1Color token {s}_0 (BRC-162; BRC-207): its outputs as the token rules allow.", .{&std.fmt.bytesToHex(r, .lower)})
         else
-            try std.fmt.allocPrint(a, "Mandala token {s}_{d} (BRC-162, deployed under BRC-161): its outputs as the token rules allow.", .{ &std.fmt.bytesToHex(r, .lower), id.vout }),
+            try std.fmt.allocPrint(a, "1Color token {s}_{d} (BRC-162, deployed under BRC-161; BRC-207): its outputs as the token rules allow.", .{ &std.fmt.bytesToHex(r, .lower), id.vout }),
         .version = version,
-        .information_url = "https://github.com/shruggr/skein-mandala",
+        .information_url = "https://github.com/shruggr/skein-1color",
     };
 }
 
 pub const version = "0.4.0";
 
 pub fn documentation(_: Allocator, t: []const u8) anyerror![]const u8 {
-    if (eql(u8, t, mandala.name.deploys_topic)) return
-    \\# Mandala token deploys (tm_mandala)
+    if (eql(u8, t, color.name.deploys_topic)) return
+    \\# 1Color token deploys (tm_color)
     \\
-    \\The discovery topic: every token's deploy output, of every Mandala token. A
-    \\registry of what tokens exist and the metadata each was deployed with (the deploy
-    \\payload: decimals, symbol, icon, ...).
+    \\The discovery topic (BRC-207 "Deployment discovery"): every token's deploy output, of
+    \\every 1Color token. A registry of what tokens exist and the metadata each was
+    \\deployed with (the deploy payload: decimals, symbol, icon, ...).
     \\
     \\It admits an output that is a valid deploy and nothing else:
     \\
@@ -88,15 +88,15 @@ pub fn documentation(_: Allocator, t: []const u8) anyerror![]const u8 {
     \\  `<txid>_<vout>`.
     \\
     \\No other rule and no governance. It is served while registered with the overlay
-    \\engine (`register {topic: "tm_mandala", program: "mandala-topic"}`).
+    \\engine (`register {topic: "tm_color", program: "color-topic"}`).
     \\
     ;
     return
-    \\# Mandala token topic (tm_mandala_<assetId>)
+    \\# 1Color token topic (tm_color_<assetId>)
     \\
-    \\One topic per Mandala token (BRC-162; BRC-207), `tm_mandala_<assetId>`: `tm_mandala_<txid>_0`
+    \\One topic per 1Color token (BRC-162; BRC-207), `tm_color_<assetId>`: `tm_color_<txid>_0`
     \\for a token deployed at output 0, under BRC-162 or BRC-161 (its id `<txid>_0`);
-    \\`tm_mandala_<txid>_<vout>` for a token deployed under BRC-161 (JSON) at output `<vout>`,
+    \\`tm_color_<txid>_<vout>` for a token deployed under BRC-161 (JSON) at output `<vout>`,
     \\its id `<txid>_<vout>`, with its one-way
     \\migration to the binary form. `<txid>` is the deploy txid, 64 lowercase hex characters
     \\in display order. A token id is `<txid>_<vout>` for every token, `_0` included (BRC-162
@@ -117,8 +117,8 @@ pub fn documentation(_: Allocator, t: []const u8) anyerror![]const u8 {
     \\control check: the protocol only.
     \\
     \\The overlay serves a token's topic once it is registered with the overlay engine
-    \\(`register {topic: "tm_mandala_<txid>_<vout>", program: "mandala-topic"}`), and its lookup
-    \\`ls_mandala_<txid>_<vout>` beside it (`registerLookup`). The discovery topic `tm_mandala`
+    \\(`register {topic: "tm_color_<txid>_<vout>", program: "color-topic"}`), and its lookup
+    \\`ls_color_<txid>_<vout>` beside it (`registerLookup`). The discovery topic `tm_color`
     \\holds every token's deploy output.
     \\
     ;
