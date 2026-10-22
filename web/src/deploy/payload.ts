@@ -1,5 +1,5 @@
 /**
- * The deploy form → @1sat/actions' `deployMandala` input (BRC-162: symbol,
+ * The deploy form → @1sat/actions' `deploy1Color` input (BRC-162: symbol,
  * decimals, icon, a fixed supply or an authority deploy), and the names the
  * deploy gives the token. Pure; the page hands the input to the SDK action.
  *
@@ -8,7 +8,7 @@
  * outpoint or an output index, are gone): the page reads an image file and
  * passes `{mediaType, bytes}` (b-open-io/1sat-sdk#92).
  */
-import type { DeployMandalaInput } from "@1sat-actions/mandala/deploy.js";
+import type { Deploy1ColorInput } from "@1sat-actions/1color/deploy.js";
 
 /** BRC-162 amounts are u64. */
 export const MAX_AMOUNT = 0xffffffffffffffffn;
@@ -49,7 +49,7 @@ export function iconOf(i: Icon): Icon {
 }
 
 /** The SDK action's input. Throws with the field's name on a bad value. */
-export function deployInput(f: DeployForm): DeployMandalaInput {
+export function deployInput(f: DeployForm): Deploy1ColorInput {
   const symbol = f.symbol.trim();
   if (!symbol) throw new Error("symbol: required");
   const dec = f.decimals.trim() === "" ? 0 : Number(f.decimals.trim());
@@ -60,7 +60,7 @@ export function deployInput(f: DeployForm): DeployMandalaInput {
     if (amount <= 0n) throw new Error("amount: more than 0 for a fixed supply");
     if (amount > MAX_AMOUNT) throw new Error("amount: at most 2^64-1 base units");
   }
-  const input: DeployMandalaInput = { amount: amount.toString(), symbol, decimals: dec };
+  const input: Deploy1ColorInput = { amount: amount.toString(), symbol, decimals: dec };
   if (f.icon) input.icon = iconOf(f.icon);
   return input;
 }

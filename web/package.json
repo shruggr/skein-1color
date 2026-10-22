@@ -1,6 +1,6 @@
 {
   "name": "skein-1color-pages",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "private": true,
   "type": "module",
   "description": "1Color's pages (deploy a token; root's registered token topics), built into ../www for an embedding app to serve under /<app>/color/. See ../README.md, \"Pages\".",
@@ -10,11 +10,12 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@1sat/actions": "0.0.233",
-    "@1sat/react": "0.0.102",
-    "@1sat/connect": "0.0.104",
-    "@1sat/templates": "0.0.43",
-    "@bsv/sdk": "2.8.6",
+    "@1sat/actions": "0.1.0",
+    "@1sat/connect": "0.1.0",
+    "@1sat/react": "0.1.0",
+    "@1sat/templates": "0.1.0",
+    "@bsv/color-permission-module": "npm:@bopen-io/color-permission-module@0.1.0",
+    "@bsv/sdk": "npm:@bopen-io/sdk@4.0.1",
     "@ipld/dag-cbor": "10.0.2",
     "@ipld/dag-json": "11.0.1",
     "buffer": "6.0.3",
@@ -30,5 +31,8 @@
     "typescript": "^5.6.3",
     "vite": "^6.0.7",
     "vitest": "^3.0.5"
+  },
+  "overrides": {
+    "@bsv/sdk": "npm:@bopen-io/sdk@4.0.1"
   }
 }

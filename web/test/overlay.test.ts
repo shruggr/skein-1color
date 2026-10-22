@@ -102,7 +102,7 @@ describe("a token topic's own deploy", () => {
     await submitDeployToTopic(base, `tm_color_${txid}_2`, undefined, f, f);
     expect(JSON.parse(sent[0]!.body as string).query).toEqual({ tokenId: `${txid}_2` });
   });
-  it("the lookup has none: the wallet's copy (basket mandala <txid> 0), under tm_color and tm_color_<txid>_0", async () => {
+  it("the lookup has none: the wallet's copy (basket p color <txid>v0, BRC-207), under tm_color and tm_color_<txid>_0", async () => {
     const { f, sent } = stub([]);
     const asked: unknown[] = [];
     const wallet = {
@@ -110,9 +110,24 @@ describe("a token topic's own deploy", () => {
     } as unknown as WalletInterface;
     const r = await submitDeployToTopic(base, `tm_color_${txid}_0`, wallet, f, f);
     expect(r).toEqual({ answer: ADMITTED, via: "wallet", topics: ["tm_color", `tm_color_${txid}_0`] });
-    expect(asked).toEqual([{ basket: `mandala ${txid} 0`, include: "entire transactions", limit: 100 }]);
+    expect(asked).toEqual([{ basket: `p color ${txid}v0`, include: "entire transactions", limit: 100 }]);
     expect(sent[1]!.headers["x-topics"]).toBe(`tm_color,tm_color_${txid}_0`);
     expect(Array.from(sent[1]!.body as Uint8Array)).toEqual(beef);
+  });
+  it("an authority deploy: the wallet's copy from p color <txid>v0 authority, after the value basket has none", async () => {
+    const { f } = stub([]);
+    const asked: Array<{ basket: string }> = [];
+    const wallet = {
+      listOutputs: async (a: { basket: string }) => {
+        asked.push(a);
+        return a.basket.endsWith(" authority")
+          ? { totalOutputs: 1, outputs: [{ outpoint: `${txid}.0`, satoshis: 1, spendable: true }], BEEF: beef }
+          : { totalOutputs: 0, outputs: [] };
+      },
+    } as unknown as WalletInterface;
+    const r = await submitDeployToTopic(base, `tm_color_${txid}_0`, wallet, f, f);
+    expect(r.via).toBe("wallet");
+    expect(asked.map((a) => a.basket)).toEqual([`p color ${txid}v0`, `p color ${txid}v0 authority`]);
   });
   it("neither has it: an error, nothing submitted", async () => {
     const { f, sent } = stub([]);

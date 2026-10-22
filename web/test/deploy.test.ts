@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { Mandala } from "@1sat/templates";
+import { OneColor } from "@1sat/templates";
 import { LockingScript, PrivateKey, ProtoWallet, type CreateActionArgs, type WalletInterface } from "@bsv/sdk";
 import { createContext } from "@1sat-actions/types.js";
-import { deployMandala } from "@1sat-actions/mandala/deploy.js";
+import { deploy1Color } from "@1sat-actions/1color/deploy.js";
 import { baseUnits, deployInput, iconOf, namesOf, type DeployForm } from "../src/deploy/payload";
 
 const txid = "ab".repeat(32);
@@ -48,11 +48,11 @@ describe("deploy payload", () => {
       getPublicKey: (a: Parameters<ProtoWallet["getPublicKey"]>[0]) => proto.getPublicKey(a),
       createAction: async (a: CreateActionArgs) => { created.push(a); return {}; },
     } as unknown as WalletInterface;
-    const r = await deployMandala.execute(createContext(wallet), deployInput(form({ icon: { mediaType: "image/png", bytes: png } })));
-    expect(r.error).toBe("deploy-no-tx"); // the fake wallet returns no transaction; the args are what count
+    const r = await deploy1Color.execute(createContext(wallet), deployInput(form({ icon: { mediaType: "image/png", bytes: png } })));
+    expect(r.error).toBe("no-transaction"); // the fake wallet returns no transaction; the args are what count
     expect(created).toHaveLength(1);
     const out = created[0]!.outputs![0]!;
-    const t = Mandala.decode(LockingScript.fromHex(out.lockingScript));
+    const t = OneColor.decode(LockingScript.fromHex(out.lockingScript));
     expect(t?.role).toBe("deploy");
     expect(t?.amount).toBe(1050n);
     expect(t?.metadata).toEqual({ sym: "TOK", dec: 2, icon: { mediaType: "image/png", bytes: png } });

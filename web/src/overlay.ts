@@ -26,6 +26,7 @@
  * still lands (and is admitted by no one).
  */
 import type { WalletInterface } from "@bsv/sdk";
+import { assetBasket } from "@bsv/color-permission-module";
 import { RawBox } from "skein/src/client/raw.ts";
 import { DISCOVERY } from "./tokens/list";
 
@@ -106,14 +107,25 @@ export async function lookupDeployBeef(appBase: string, tokenId: string, f: Fetc
 
 /**
  * The deploy's BEEF from the connected wallet: the deploy output in the
- * token's basket `mandala <txid> <vout>` (@1sat/actions' filing), its
- * transaction as BEEF (`include: "entire transactions"`). Undefined when the
- * wallet does not hold it (not the deployer's, or the output spent).
+ * token's basket as the wallet's BRC-207 `color` module files it,
+ * `p color <txid>v<vout>` (a fixed-supply deploy) or
+ * `p color <txid>v<vout> authority` (an authority deploy), its transaction as
+ * BEEF (`include: "entire transactions"`). Undefined when the wallet holds it
+ * in neither (not the deployer's, or the output spent).
  */
 export async function walletDeployBeef(wallet: WalletInterface, txid: string, vout: number): Promise<ArrayLike<number> | undefined> {
-  const r = await wallet.listOutputs({ basket: `mandala ${txid} ${vout}`, include: "entire transactions", limit: 100 });
-  const held = r.outputs.some((o) => o.outpoint === `${txid}.${vout}`);
-  return held && r.BEEF && r.BEEF.length > 0 ? r.BEEF : undefined;
+  for (const basket of deployBaskets(txid, vout)) {
+    const r = await wallet.listOutputs({ basket, include: "entire transactions", limit: 100 });
+    const held = r.outputs.some((o) => o.outpoint === `${txid}.${vout}`);
+    if (held && r.BEEF && r.BEEF.length > 0) return r.BEEF;
+  }
+  return undefined;
+}
+
+/** The two baskets a deploy output can be in (BRC-207 `assetBasket`): value, then authority. */
+export function deployBaskets(txid: string, vout: number): [string, string] {
+  const assetId = `${txid}_${vout}`;
+  return [assetBasket(assetId, "value"), assetBasket(assetId, "authority")];
 }
 
 export type Submitted = { answer: string; via: "lookup" | "wallet"; topics: string[] };
@@ -146,7 +158,7 @@ export async function submitWalletDeploy(appBase: string, topic: string, wallet:
   const { txid, vout } = tokenOfTopic(topic);
   if (!wallet) throw new Error(`${why}, and no wallet is connected to give it`);
   const beef = await walletDeployBeef(wallet, txid, vout);
-  if (!beef) throw new Error(`${why}, and this wallet does not hold it (basket mandala ${txid} ${vout})`);
+  if (!beef) throw new Error(`${why}, and this wallet does not hold it (baskets ${deployBaskets(txid, vout).join(", ")})`);
   const topics = [DISCOVERY, topic];
   return { answer: await submitBeef(appBase, beef, topics, submitF), via: "wallet", topics };
 }

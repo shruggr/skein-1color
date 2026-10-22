@@ -1,10 +1,14 @@
 /**
  * Deploy a token: open to anyone, a helper over the user's own wallet.
- * @1sat/actions' `deployMandala` builds the BRC-162 deploy at output 0, the
- * wallet signs and broadcasts it and files it (basket and labels
- * `mandala <txid> 0`). The page then submits the deploy to the overlay it is
- * served from under the discovery topic only (`tm_color`): its own topic
- * `tm_color_<txid>_0` did not exist before this transaction, so nobody serves it yet.
+ * @1sat/actions' `deploy1Color` builds the BRC-162 deploy at output 0 and
+ * hands it to the wallet's BRC-207 `color` module, which signs and broadcasts
+ * it, files it in its own basket (`p color <txid>v0`, or
+ * `p color <txid>v0 authority` for an authority deploy) and submits it to
+ * `tm_color` and the token's topic at the wallet's configured overlay. The
+ * page then submits the deploy to the overlay it is served from under the
+ * discovery topic only (`tm_color`): its own topic `tm_color_<txid>_0` did not
+ * exist here before this transaction, so nobody serves it yet. A repeat
+ * submit is harmless. A result with an error is an error: no Deployed panel.
  * The icon is an image file, embedded in the deploy (`{mediaType, bytes}`,
  * BRC-162 draft bsv-blockchain/BRCs#308).
  * The submit is a plain `fetch`, unsigned: the skein admits an unsigned POST
@@ -14,14 +18,15 @@
 import { useState } from "react";
 import { useWallet } from "@1sat/react";
 import { createContext } from "@1sat-actions/types.js";
-import { deployMandala, fileMandalaDeploy } from "@1sat-actions/mandala/deploy.js";
+import { deploy1Color } from "@1sat-actions/1color/deploy.js";
+import { assetBasket } from "@bsv/color-permission-module";
 import { mount } from "../shell";
 import { whereOf } from "../where";
 import { DISCOVERY, appBaseOf, submitBeef } from "../overlay";
 import { deployInput, namesOf, type DeployForm, type Icon } from "./payload";
 import { Id, Ids } from "../Id";
 
-type Done = { txid: string; tx?: number[]; error?: string; submitted?: string; submitErr?: string };
+type Done = { txid: string; tx?: number[]; basket: string; submitted?: string; submitErr?: string };
 
 const where = whereOf(location.href);
 
@@ -58,18 +63,10 @@ function DeployPage() {
     if (!wallet) return;
     setBusy(true); setErr(""); setDone(undefined);
     try {
-      const r = await deployMandala.execute(createContext(wallet), deployInput(f));
-      if (r.txid) setDone({ txid: r.txid, tx: r.tx, error: r.error, ...(await submitDeploy(r.tx)) });
-      else setErr(r.error ?? "the wallet returned no transaction");
+      const r = await deploy1Color.execute(createContext(wallet), deployInput(f));
+      if (r.error || !r.txid) setErr(r.error ?? "the wallet returned no transaction");
+      else setDone({ txid: r.txid, tx: r.tx, basket: assetBasket(`${r.txid.toLowerCase()}_0`, f.supply === "authority" ? "authority" : "value"), ...(await submitDeploy(r.tx)) });
     } catch (e) { setErr((e as Error).message); }
-    setBusy(false);
-  }
-
-  async function refile() {
-    if (!wallet || !done) return;
-    setBusy(true);
-    const r = await fileMandalaDeploy.execute(createContext(wallet), { txid: done.txid, tx: done.tx });
-    setDone({ ...done, error: r.error });
     setBusy(false);
   }
 
@@ -114,11 +111,7 @@ function DeployPage() {
             <tr><th>topic to register</th><td><Id value={names.topic} /></td></tr>
             <tr><th>its lookup</th><td><Id value={names.lookup} /></td></tr>
           </tbody></table>
-          {done.error ? (
-            <p className="status bad">Broadcast, not filed in your wallet: <Ids text={done.error} /> <button type="button" disabled={busy} onClick={refile}>File it again</button></p>
-          ) : (
-            <p className="ok small">In your wallet: basket <Id value={`mandala ${done.txid} 0`} />.</p>
-          )}
+          <p className="ok small">In your wallet: basket <Id value={done.basket} />.</p>
           {done.submitted ? (
             <p className="ok small">Submitted to this overlay under <code>{DISCOVERY}</code>: <Ids text={done.submitted} />. The discovery topic has the deploy once admitted (lookup <code>ls_color_deploys</code>); if this overlay does not serve <code>{DISCOVERY}</code>, nothing admits it.</p>
           ) : done.submitErr ? (

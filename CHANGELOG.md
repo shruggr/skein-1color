@@ -4,6 +4,33 @@ Released versions of skein-1color (skein-mandala until 0.9.2). Versions
 before 0.10.0 are in the git history (each release commit names what
 changed).
 
+## 0.10.1 (2026-10-21)
+
+The pages only (no program, wasm or manifest change). The deploy goes
+through the wallet's BRC-207 `color` module: `@1sat/actions` 0.1.0's
+`deploy1Color` replaces `deployMandala`, so the wallet no longer asks for
+the basket `mandala <txid> 0` (David, 2026-10-21).
+
+- `web/package.json` (0.6.3): `@1sat/actions`, `@1sat/react`,
+  `@1sat/connect`, `@1sat/templates` 0.1.0, published, on `@bsv/sdk` 4;
+  `@bsv/sdk` → `npm:@bopen-io/sdk@4.0.1` (with an `overrides` entry, one
+  copy in the tree), `@bsv/color-permission-module` →
+  `npm:@bopen-io/color-permission-module@0.1.0` (already in the tree under
+  `@1sat/actions`; the pages use its `assetBasket`). The packed-tarball
+  build of 0.9.1/0.10.0 is gone.
+- Deploy page: the module files the deploy in its basket
+  `p color <txid>v0` (`p color <txid>v0 authority` for an authority
+  deploy; BRC-207's asset tag `<txid>v<vout>`, not `<txid>_<vout>`) and
+  submits it to `tm_color` and the token's topic at the wallet's overlay.
+  The page still submits it to this overlay's `tm_color` by plain fetch,
+  as before. "File it again" (`fileMandalaDeploy`) is gone: the module
+  files in the same action. A result with an error is shown as an error,
+  never as "Deployed" (0.10.0 showed the Deployed panel when the wallet
+  had broadcast but filing was refused).
+- Tokens page: the wallet fallback for a deploy the overlay does not hold
+  reads `p color <txid>v<vout>`, then `p color <txid>v<vout> authority`
+  (was `mandala <txid> <vout>`).
+
 ## 0.10.0 (2026-10-21)
 
 The 1Color rename (David Case, 2026-10-15, shruggr/skein#120; BRC-162

@@ -8,7 +8,7 @@
 // (src/client/raw.ts `RawBox`, as skein-site bundles it), read from
 // $SKEIN_DIR; its `node:crypto` is skein's browser shim (web/shims). Every
 // package resolves from this directory's node_modules (package-lock.json).
-// The one @1sat/actions action used (deployMandala) is imported by file:
+// The one @1sat/actions action used (deploy1Color) is imported by file:
 // the package entry re-exports every action (skein-site does the same).
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
