@@ -4,7 +4,7 @@ The 1Color token (BRC-162; BRC-207) overlay components for a
 [skein](https://github.com/shruggr/skein): a topic manager and a lookup
 service, as programs an overlay app carries in its tree, and the token
 library they are built on, as a Zig package, and two pages an app that
-carries the components serves. Version **0.11.0**.
+carries the components serves. Version **0.11.1**.
 
 0.10.0 is the 1Color rename, on BRC-207's wire names
 (David Case, 2026-10-15, shruggr/skein#120): the repo `skein-1color`, the
@@ -270,6 +270,12 @@ AMM) carries these in its tree and manifest:
      handler: a peer's sync frames (the locator, the admitted lists, a
      transaction's BEEF) are answered by the engine's filter, a read,
      nothing logged. An app that declares no such row does not serve sync.
+   - **The receive row** (0.11.1, skein-overlay 0.15.0):
+     `{"transport": "libp2p", "address": "/skein/overlay/beef/1.0.0",
+     "filters": ["kernel.beef"], "handler": "overlay.submit"}`: each Atomic
+     BEEF a catch-up fetches is handed to this row by the host, as from the
+     serving peer (skein `src/host/sync.ts`). Without it the puller refuses
+     every fetched BEEF ("no route for libp2p:/skein/overlay/beef/1.0.0").
 4. **The register calls**, made by root once the app is installed, two
    per token it runs: `{"fn": "register", "args": {"topic":
    "tm_color_<assetId>", "program": "color-topic"}}`, then `{"fn":
@@ -296,7 +302,7 @@ A program of the app's own that reads token outputs depends on the
 ```zig
 .dependencies = .{
     .skein_1color = .{
-        .url = "https://github.com/shruggr/skein-1color/archive/refs/tags/v0.11.0.tar.gz",
+        .url = "https://github.com/shruggr/skein-1color/archive/refs/tags/v0.11.1.tar.gz",
         .hash = "<zig fetch --save prints it>",
     },
 },
@@ -408,8 +414,8 @@ checkout: `zig build --fork=../skein-overlay`.
 
 | | |
 |---|---|
-| this app, its programs and package | 0.11.0 (tag `v0.11.0`) |
-| the pages | `@1sat/actions`, `@1sat/react`, `@1sat/connect`, `@1sat/templates` 0.1.0 (published; on `@bsv/sdk` 4), `@bsv/sdk` aliased to `npm:@bopen-io/sdk@4.0.1` and `@bsv/color-permission-module` to `npm:@bopen-io/color-permission-module@0.1.0` (the interim @bopen-io repack of ts-stack #1243 until upstream publishes; an npm `overrides` entry keeps one copy of `@bsv/sdk`), `web/package.json`, exact; skein's client at `web/lib/SKEIN_REV` (the build also needs the package `buffer` to resolve from that checkout, for its `web/shims/buffer.ts`: a `node_modules` there, or a link to `web/node_modules`). The committed `www/` is the 0.10.1 build (unchanged in 0.11.0). |
+| this app, its programs and package | 0.11.1 (tag `v0.11.1`) |
+| the pages | `@1sat/actions`, `@1sat/react`, `@1sat/connect`, `@1sat/templates` 0.1.0 (published; on `@bsv/sdk` 4), `@bsv/sdk` aliased to `npm:@bopen-io/sdk@4.0.1` and `@bsv/color-permission-module` to `npm:@bopen-io/color-permission-module@0.1.0` (the interim @bopen-io repack of ts-stack #1243 until upstream publishes; an npm `overrides` entry keeps one copy of `@bsv/sdk`), `web/package.json`, exact; skein's client at `web/lib/SKEIN_REV` (the build also needs the package `buffer` to resolve from that checkout, for its `web/shims/buffer.ts`: a `node_modules` there, or a link to `web/node_modules`). The committed `www/` is the 0.10.1 build (unchanged in 0.11.0 and 0.11.1). |
 | skein-overlay | v0.15.0 by tag URL and hash in `build.zig.zon` (modules `topic`, `lookup`, `sk`); the engine in `bin/` is its build |
 | skein-sdk | v0.11.1, through skein-overlay (modules `chain`, `sk`, `cbor`) |
 | requires | `chain/1` (shruggr/skein-chain 0.3.0) |

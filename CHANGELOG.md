@@ -4,6 +4,19 @@ Released versions of skein-1color (skein-mandala until 0.9.2). Versions
 before 0.10.0 are in the git history (each release commit names what
 changed).
 
+## 0.11.1 (2026-10-23)
+
+The receive row (shruggr/skein#154). No other change in behaviour; the
+programs, the engine, the pages and `www/` are unchanged.
+
+- `etc/app.json`: the engine's receive row `{"transport": "libp2p",
+  "address": "/skein/overlay/beef/1.0.0", "filters": ["kernel.beef"],
+  "handler": "overlay.submit"}`, as in skein-overlay's own manifest. The
+  host hands each Atomic BEEF a catch-up fetches to this row, as from the
+  serving peer; without it a puller refused every fetched BEEF ("no route
+  for libp2p:/skein/overlay/beef/1.0.0"; found live, a local node catching
+  up from the rack's `swap`). The description says so.
+
 ## 0.11.0 (2026-10-23)
 
 The sync row (shruggr/skein-overlay#5, shruggr/skein#154; David,
