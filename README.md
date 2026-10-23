@@ -4,7 +4,7 @@ The 1Color token (BRC-162; BRC-207) overlay components for a
 [skein](https://github.com/shruggr/skein): a topic manager and a lookup
 service, as programs an overlay app carries in its tree, and the token
 library they are built on, as a Zig package, and two pages an app that
-carries the components serves. Version **0.11.1**.
+carries the components serves. Version **0.11.2**.
 
 0.10.0 is the 1Color rename, on BRC-207's wire names
 (David Case, 2026-10-15, shruggr/skein#120): the repo `skein-1color`, the
@@ -91,8 +91,10 @@ runtime, the hooks reaching a lookup program once)
 (docs/1COLOR.md "Registering a topic"), taken in root's box
 `<app>/register` (0.7.7; `<app>/overlay` from 0.6.2), and whose submissions are messages into the
 submission box `<app>/submit`, by message and from `POST /submit` (0.7.6;
-before, the app's own box `<app>`). `bin/overlay.wasm` here is the v0.15.0
-build (0.15.0: the sync protocol `/skein/overlay/sync/1.0.0` answered by
+before, the app's own box `<app>`). `bin/overlay.wasm` here is the v0.15.1
+build (0.15.1: a submission whose parent is held but not yet admitted
+pauses and resumes on the parent's admission, shruggr/skein-overlay#6;
+0.15.0: the sync protocol `/skein/overlay/sync/1.0.0` answered by
 the engine's filter `sync` through the front door, shruggr/skein#154), and
 before it the v0.14.0 build (0.14.0: anchors, the topic's beat carries `tipHeight`, `tipAnchor`
 and `tailDigest`, and the reads `/anchors` and `/admitted`; 0.13.0:
@@ -198,7 +200,7 @@ An app that serves 1Color tokens with its own programs beside them (an
 AMM) carries these in its tree and manifest:
 
 1. **The programs.** `bin/overlay.wasm` (the engine, skein-overlay
-   0.15.0), `bin/color-topic.wasm`, `bin/color-lookup.wasm`, copied from
+   0.15.1), `bin/color-topic.wasm`, `bin/color-lookup.wasm`, copied from
    this repo, under the roles `overlay`, `color-topic`, `color-lookup`.
 2. **`config.overlay`**, with no topics:
 
@@ -302,7 +304,7 @@ A program of the app's own that reads token outputs depends on the
 ```zig
 .dependencies = .{
     .skein_1color = .{
-        .url = "https://github.com/shruggr/skein-1color/archive/refs/tags/v0.11.1.tar.gz",
+        .url = "https://github.com/shruggr/skein-1color/archive/refs/tags/v0.11.2.tar.gz",
         .hash = "<zig fetch --save prints it>",
     },
 },
@@ -396,7 +398,7 @@ zig build bin      # the same, into bin/ (committed)
 zig build test     # the parsers, the rules, the topic, the lookup, natively
 ```
 
-`bin/overlay.wasm` is copied from skein-overlay v0.15.0's build (`zig build
+`bin/overlay.wasm` is copied from skein-overlay v0.15.1's build (`zig build
 bin` there; the same bytes as its committed `bin/overlay.wasm`), not built
 here. With a local skein-overlay
 checkout: `zig build --fork=../skein-overlay`.
@@ -414,9 +416,9 @@ checkout: `zig build --fork=../skein-overlay`.
 
 | | |
 |---|---|
-| this app, its programs and package | 0.11.1 (tag `v0.11.1`) |
-| the pages | `@1sat/actions`, `@1sat/react`, `@1sat/connect`, `@1sat/templates` 0.1.0 (published; on `@bsv/sdk` 4), `@bsv/sdk` aliased to `npm:@bopen-io/sdk@4.0.1` and `@bsv/color-permission-module` to `npm:@bopen-io/color-permission-module@0.1.0` (the interim @bopen-io repack of ts-stack #1243 until upstream publishes; an npm `overrides` entry keeps one copy of `@bsv/sdk`), `web/package.json`, exact; skein's client at `web/lib/SKEIN_REV` (the build also needs the package `buffer` to resolve from that checkout, for its `web/shims/buffer.ts`: a `node_modules` there, or a link to `web/node_modules`). The committed `www/` is the 0.10.1 build (unchanged in 0.11.0 and 0.11.1). |
-| skein-overlay | v0.15.0 by tag URL and hash in `build.zig.zon` (modules `topic`, `lookup`, `sk`); the engine in `bin/` is its build |
+| this app, its programs and package | 0.11.2 (tag `v0.11.2`) |
+| the pages | `@1sat/actions`, `@1sat/react`, `@1sat/connect`, `@1sat/templates` 0.1.0 (published; on `@bsv/sdk` 4), `@bsv/sdk` aliased to `npm:@bopen-io/sdk@4.0.1` and `@bsv/color-permission-module` to `npm:@bopen-io/color-permission-module@0.1.0` (the interim @bopen-io repack of ts-stack #1243 until upstream publishes; an npm `overrides` entry keeps one copy of `@bsv/sdk`), `web/package.json`, exact; skein's client at `web/lib/SKEIN_REV` (the build also needs the package `buffer` to resolve from that checkout, for its `web/shims/buffer.ts`: a `node_modules` there, or a link to `web/node_modules`). The committed `www/` is the 0.10.1 build (unchanged in 0.11.0, 0.11.1 and 0.11.2). |
+| skein-overlay | v0.15.1 by tag URL and hash in `build.zig.zon` (modules `topic`, `lookup`, `sk`); the engine in `bin/` is its build |
 | skein-sdk | v0.11.1, through skein-overlay (modules `chain`, `sk`, `cbor`) |
 | requires | `chain/1` (shruggr/skein-chain 0.3.0) |
 | skein | log format 10, the BEEF envelope beside the pointer record (shruggr/skein#146); the routes / filters / roles manifest (shruggr/skein#143; 0.8.0: `dispatch` and `reads` became `routes`, the `register` box root's, the reads read routes whose filters answer) |
