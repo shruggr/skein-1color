@@ -4,6 +4,26 @@ Released versions of skein-1color (skein-mandala until 0.9.2). Versions
 before 0.10.0 are in the git history (each release commit names what
 changed).
 
+## 0.11.0 (2026-10-23)
+
+The sync row (shruggr/skein-overlay#5, shruggr/skein#154; David,
+2026-10-23: each app declares the engine's sync filter and the libp2p read
+row in its own manifest, no handler). No other change in behaviour; the
+pages and `www/` are unchanged.
+
+- `etc/app.json`: `filters.sync = "overlay.sync"` and the route
+  `{"transport": "libp2p", "address": "/skein/overlay/sync/1.0.0",
+  "filters": ["sync"]}`: a peer's catch-up frames (locator, admitted
+  ranges, a transaction's BEEF) are answered by the engine through the
+  front door, not by the host. The description says so.
+- Engine: skein-overlay v0.14.0 → v0.15.0 (tag URL and hash;
+  skein-sdk v0.11.1 through it). `bin/overlay.wasm` is the tag's
+  committed engine (sha256 45a2d8f1…dc267, the same bytes as the tag
+  tarball's). `bin/color-topic.wasm` and `bin/color-lookup.wasm`
+  rebuilt from this tree: the same bytes.
+- A host serves the row once it takes shruggr/skein#154 (until then its
+  kernel refuses a libp2p row with no handler).
+
 ## 0.10.1 (2026-10-21)
 
 The pages only (no program, wasm or manifest change). The deploy goes
