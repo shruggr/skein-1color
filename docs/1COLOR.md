@@ -15,7 +15,7 @@ BRC-207's `color` or this repo's `1color`, with no alias (CHANGELOG.md).
 | lookup service | `bin/color-lookup.wasm`, `src/color_lookup.zig` | `color-lookup` | `ls_color`: three queries over its index; `ls_color_deploys`: a token's deploy output; `ls_color_<assetId>`: BRC-207's two queries (0.9.0); fn `tokens`: the token list, a read (0.7.0); one index, `<app>/ls_color`, for every name |
 | discovery topic | the same program as the topic manager | `color-topic` | `tm_color`: every token's deploy output |
 | the library | `src/lib.zig` (module `1color`) | | the parsers, the rules, topic names, the verdict |
-| the engine | `bin/overlay.wasm` | `overlay` | shruggr/skein-overlay 0.15.1: serves the topics and lookups, keeps the registered sets (`register` / `deregister`, `registerLookup` / `deregisterLookup`), answers the sync protocol `/skein/overlay/sync/1.0.0` by its filter `sync` on the manifest's libp2p row (0.11.0), and takes a catch-up's fetched BEEFs on the receive row `/skein/overlay/beef/1.0.0` (filter `kernel.beef`, handler `overlay.submit`; 0.11.1) |
+| the engine | `bin/overlay.wasm` | `overlay` | shruggr/skein-overlay 0.16.0: serves the topics and lookups, keeps the registered sets (`register` / `deregister`, `registerLookup` / `deregisterLookup`), answers the sync protocol `/skein/overlay/sync/1.0.0` by its filter `sync` on the manifest's libp2p row (0.11.0), and takes a catch-up's fetched BEEFs on the receive row `/skein/overlay/beef/1.0.0` (filter `kernel.beef`, handler `overlay.submit`; 0.11.1) |
 
 The topic manager and the lookup service are programs on skein-overlay's
 contracts (`topic`, `lookup`). An app carries them in its tree with the

@@ -4,6 +4,22 @@ Released versions of skein-1color (skein-mandala until 0.9.2). Versions
 before 0.10.0 are in the git history (each release commit names what
 changed).
 
+## 0.11.3 (2026-10-24)
+
+Engine 0.16.0: validator terms from the record `<app>/terms`, not
+`config.overlay.terms` (shruggr/skein-overlay#7). 1Color writes no terms and
+never set `config.overlay.terms`, so its beats carry no `terms`, as before.
+No other change in behaviour; the programs, the manifest's rows, the pages
+and `www/` are unchanged.
+
+- Engine: skein-overlay v0.15.1 → v0.16.0 (tag URL and hash; skein-sdk
+  v0.11.1 through it, unchanged). `bin/overlay.wasm` is the tag's committed
+  engine (sha256 bb2f16fe…0022, the same bytes as the tag tarball's).
+  `bin/color-topic.wasm` and `bin/color-lookup.wasm` rebuilt from this
+  tree.
+- `etc/app.json`: version 0.11.3; the description names skein-overlay
+  0.16.0.
+
 ## 0.11.2 (2026-10-23)
 
 Engine 0.15.1: pending-parent pause (shruggr/skein-overlay#6). No other
