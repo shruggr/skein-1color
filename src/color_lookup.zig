@@ -605,9 +605,8 @@ fn restrictedName(n: []const u8) bool {
 /// `skip` then `limit` of them. Reads only.
 pub fn tokens(a: Allocator, s: c.store.Store, deploys_state: ?[]const u8, chain_state: ?[]const u8, q: TokensQuery) ![]const Listed {
     var svc = try Service.loadIndex(a, s, deploys_service, index_name, spec.maps, deploys_state);
-    var net: c.chain.Network = .main;
-    if (chain_state) |r| net = c.chain.Network.parse((try s.getValue(a, r)).getText("network") orelse "") orelse return error.BadChainState;
-    var ch = try lookup.Chain.load(a, s, chain_state, net);
+    // The chain app's state through the SDK's one opener (shruggr/skein-sdk#1): its record's network, else main.
+    var ch = try c.open(a, s, chain_state, .main);
     const all = try svc.map("deploys").prefixed(&.{});
     const ages = try a.alloc(Age, all.len);
     for (all, ages) |kv, *x| {

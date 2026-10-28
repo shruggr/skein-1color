@@ -4,6 +4,23 @@ Released versions of skein-1color (skein-mandala until 0.9.2). Versions
 before 0.10.0 are in the git history (each release commit names what
 changed).
 
+## 0.11.4 (2026-10-27)
+
+The chain app's state read through the SDK's one opener (shruggr/skein-sdk#1):
+the token list (`color_lookup.zig` `tokens`) calls skein-sdk v0.12.0
+`chain.open` (the record's network, else main) instead of opening the state
+itself. No change in behaviour; the manifest's rows, the pages and `www/`
+are unchanged. (shruggr/skein#156: skein-chain 0.7.0's chain state names
+the host chain's `headers` and `heights` roots; the layout readers see is
+the same.)
+
+- Engine: skein-overlay v0.16.0 → v0.16.1 (tag URL and hash; skein-sdk
+  v0.11.1 → v0.12.0 through it). `bin/overlay.wasm` is the tag's committed
+  engine. `bin/color-topic.wasm` and `bin/color-lookup.wasm` rebuilt from
+  this tree.
+- `etc/app.json`: version 0.11.4; the description names skein-overlay
+  0.16.1.
+
 ## 0.11.3 (2026-10-24)
 
 Engine 0.16.0: validator terms from the record `<app>/terms`, not
