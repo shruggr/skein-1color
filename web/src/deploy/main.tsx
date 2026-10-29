@@ -113,7 +113,7 @@ function DeployPage() {
           </tbody></table>
           <p className="ok small">In your wallet: basket <Id value={done.basket} />.</p>
           {done.submitted ? (
-            <p className="ok small">Submitted to this overlay under <code>{DISCOVERY}</code>: <Ids text={done.submitted} />. The discovery topic has the deploy once admitted (lookup <code>ls_color_deploys</code>); if this overlay does not serve <code>{DISCOVERY}</code>, nothing admits it.</p>
+            <p className="ok small">Submitted to this overlay under <code>{DISCOVERY}</code>: <Ids text={done.submitted} />. The discovery topic has the deploy once admitted (lookup <code>ls_color</code>, by the deploy's outpoint); if this overlay does not serve <code>{DISCOVERY}</code>, nothing admits it.</p>
           ) : done.submitErr ? (
             <p className="status bad">Not submitted to this overlay: <Ids text={done.submitErr} /> <button type="button" disabled={busy} onClick={resubmit}>Submit again</button></p>
           ) : null}

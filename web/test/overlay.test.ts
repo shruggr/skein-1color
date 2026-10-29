@@ -88,19 +88,19 @@ describe("a token topic's own deploy", () => {
     expect(tokenOfTopic(`tm_color_${txid}_3`)).toEqual({ tokenId: `${txid}_3`, txid, vout: 3 });
     expect(() => tokenOfTopic("tm_color")).toThrow(/token's topic/);
   });
-  it("register → the discovery lookup → submit under tm_color_<txid>_0 only", async () => {
+  it("register → the discovery lookup (ls_color at the deploy outpoint) → submit under tm_color_<txid>_0 only", async () => {
     const { f, sent } = stub([{ beef, outputIndex: 0 }]);
     const r = await submitDeployToTopic(base, `tm_color_${txid}_0`, undefined, f, f);
     expect(r).toEqual({ answer: ADMITTED, via: "lookup", topics: [`tm_color_${txid}_0`] });
     expect(sent.map((s) => s.url)).toEqual([`${base}/lookup`, `${base}/submit`]);
-    expect(JSON.parse(sent[0]!.body as string)).toEqual({ service: "ls_color_deploys", query: { tokenId: `${txid}_0` } });
+    expect(JSON.parse(sent[0]!.body as string)).toEqual({ service: "ls_color", query: { txid, outputIndex: 0 } });
     expect(sent[1]!.headers["x-topics"]).toBe(`tm_color_${txid}_0`);
     expect(Array.from(sent[1]!.body as Uint8Array)).toEqual(beef);
   });
-  it("the legacy form looks up <txid>_<vout>", async () => {
+  it("the legacy form looks up its deploy outpoint <txid>, <vout>", async () => {
     const { f, sent } = stub([{ beef, outputIndex: 2 }]);
     await submitDeployToTopic(base, `tm_color_${txid}_2`, undefined, f, f);
-    expect(JSON.parse(sent[0]!.body as string).query).toEqual({ tokenId: `${txid}_2` });
+    expect(JSON.parse(sent[0]!.body as string).query).toEqual({ txid, outputIndex: 2 });
   });
   it("the lookup has none: the wallet's copy (basket p color <txid>v0, BRC-207), under tm_color and tm_color_<txid>_0", async () => {
     const { f, sent } = stub([]);

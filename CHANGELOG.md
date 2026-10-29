@@ -4,6 +4,34 @@ Released versions of skein-1color (skein-mandala until 0.9.2). Versions
 before 0.10.0 are in the git history (each release commit names what
 changed).
 
+## 0.12.0 (2026-10-29)
+
+One lookup name over the discovery topic (David, 2026-10-29: "There should
+be no difference between what these things are looking up. The only
+difference is which topic the instance has got access to."). A lookup is
+`color-lookup` under a name; the name pairs it with the topic that feeds it;
+an output is looked up by outpoint.
+
+- `ls_color_deploys` is GONE, no alias (the name switch in
+  `color_lookup.zig` and `name.zig`'s `deploys_service` removed). A deploy
+  is looked up under `ls_color` by its outpoint, `{txid, outputIndex}`: the
+  token id `<txid>_<vout>` IS that outpoint. On a `tm_color` feed (the map
+  `deploys`) it answers the deploy output, spent or not (a registry, as
+  `ls_color_deploys {tokenId}` did); a rejected deploy is gone.
+  `{tokenId}` / `{authoritiesTokenId}` read the token topics' maps, as
+  before (a `tm_color` feed puts nothing there).
+- `ls_color_<assetId>` answers `ls_color`'s three queries too (a query
+  carrying `type` is BRC-207's, validated strictly as before; any other is
+  one of the three). Until 0.11.x it refused them. color-lookup version
+  0.5.0.
+- `etc/app.json`: `config.overlay.lookups` is `ls_color` alone; version
+  0.12.0; description.
+- Pages: `DEPLOYS_LOOKUP` is `ls_color`, asked `{txid, outputIndex}`; the
+  deploy page still submits to `tm_color` at the pages' origin; the tokens
+  page's text. `www/` rebuilt.
+- `bin/color-lookup.wasm` rebuilt from this tree; `bin/overlay.wasm` and
+  `bin/color-topic.wasm` unchanged (engine skein-overlay v0.16.1).
+
 ## 0.11.4 (2026-10-27)
 
 The chain app's state read through the SDK's one opener (shruggr/skein-sdk#1):

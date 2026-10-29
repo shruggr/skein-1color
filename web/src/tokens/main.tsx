@@ -172,7 +172,7 @@ function TokensPage() {
             <h2>Discovery</h2>
             <label className="inline">
               <input type="checkbox" checked={discoveryOn} disabled={!!busy || topics === undefined} onChange={(e) => void run("discovery", [discovery(e.target.checked)])} />
-              Serve <code>{DISCOVERY}</code>: every token's deploy output, so the metadata each token was deployed with can be found (lookup <code>ls_color_deploys</code>).
+              Serve <code>{DISCOVERY}</code>: every token's deploy output, so the metadata each token was deployed with can be found (lookup <code>ls_color</code>, a deploy by its outpoint).
             </label>
           </div>
           <p className="mut small">This overlay is a market and a validator for every registered token, always: registering a token starts both (the beats on <code>tm_color_&lt;assetId&gt;-live</code>), deregistering stops them.</p>

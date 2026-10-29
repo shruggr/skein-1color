@@ -12,7 +12,7 @@ BRC-207's `color` or this repo's `1color`, with no alias (CHANGELOG.md).
 | component | file | role | what |
 |---|---|---|---|
 | topic manager | `bin/color-topic.wasm`, `src/color_topic.zig` | `color-topic` | judges `tm_color_<assetId>` by the token rules |
-| lookup service | `bin/color-lookup.wasm`, `src/color_lookup.zig` | `color-lookup` | `ls_color`: three queries over its index; `ls_color_deploys`: a token's deploy output; `ls_color_<assetId>`: BRC-207's two queries (0.9.0); fn `tokens`: the token list, a read (0.7.0); one index, `<app>/ls_color`, for every name |
+| lookup service | `bin/color-lookup.wasm`, `src/color_lookup.zig` | `color-lookup` | `ls_color`: three queries over its index, a deploy `tm_color` admitted by its outpoint among them (0.12.0); `ls_color_<assetId>`: BRC-207's two queries (0.9.0) and `ls_color`'s three (0.12.0); fn `tokens`: the token list, a read (0.7.0); one index, `<app>/ls_color`, for every name |
 | discovery topic | the same program as the topic manager | `color-topic` | `tm_color`: every token's deploy output |
 | the library | `src/lib.zig` (module `1color`) | | the parsers, the rules, topic names, the verdict |
 | the engine | `bin/overlay.wasm` | `overlay` | shruggr/skein-overlay 0.16.0: serves the topics and lookups, keeps the registered sets (`register` / `deregister`, `registerLookup` / `deregisterLookup`), answers the sync protocol `/skein/overlay/sync/1.0.0` by its filter `sync` on the manifest's libp2p row (0.11.0), and takes a catch-up's fetched BEEFs on the receive row `/skein/overlay/beef/1.0.0` (filter `kernel.beef`, handler `overlay.submit`; 0.11.1) |
@@ -38,9 +38,10 @@ display order; `<vout>` decimal without leading zeros.
 - `tm_color_<txid>_<vout>`: a token deployed under BRC-161 at a non-zero
   output. Its binary outputs carry the 36-byte id, the only tokens that
   have one.
-- `tm_color` is the discovery topic and `ls_color_deploys` its lookup
-  (below): neither carries an asset id, so neither is a token's (a token's
-  name is the prefix `tm_color_` / `ls_color_` followed by one).
+- `tm_color` is the discovery topic and `ls_color` its lookup (below,
+  0.12.0; `ls_color_deploys` until 0.11.x, gone with no alias): neither
+  carries an asset id, so neither is a token's (a token's name is the
+  prefix `tm_color_` / `ls_color_` followed by one).
 - 0.8.2's `tm_<txid>_<vout>` and the bare `tm_<txid>` (until 0.8.1) are not
   topic names, neither produced nor taken: no alias. Names derived from a
   topic follow it: `tm_color_<txid>_0-live`.
@@ -95,14 +96,17 @@ admitted transaction and topic, whatever its names, and every name reads
 the one index). The hooks go by the topic, never by the name.
 
 `ls_color`, the query shapes of the ts-stack BRC-162 lookup (Deggen's,
-`packages/overlays/topics`, its lookup docs). The first
-key present, in this order, answers:
+`packages/overlays/topics`, its lookup docs), the same under every name of
+the program (0.12.0; David, 2026-10-29: "There should be no difference
+between what these things are looking up. The only difference is which
+topic the instance has got access to."). The first key present, in this
+order, answers:
 
 | query | answer |
 |---|---|
 | `{authoritiesTokenId, limit?, skip?}` | the token's unspent authority outputs, its deploy among them, in outpoint order |
 | `{tokenId, limit?, skip?}` | the token's unspent value outputs, in outpoint order |
-| `{txid, outputIndex}` | the value or authority output at that outpoint, if unspent |
+| `{txid, outputIndex}` | the value or authority output at that outpoint, if unspent; a deploy the discovery topic admitted, spent or not (0.12.0: a token id `<txid>_<vout>` is its deploy's outpoint) |
 
 - A token id is taken as `<txid>`, `<txid>_<vout>` or `<txid>.<vout>`
   ("Token ids" above). Lowercase hex in display order; the vout decimal
@@ -164,8 +168,10 @@ spendability contract"; the wire names `color`, 0.10.0):
   this service's own, written exactly (`<txid>_<vout>`,
   `tm_color_<txid>_<vout>`); each outpoint canonical BRC-36 dot form, 64
   lowercase hex, `.`, the index without leading zeros, at most 2^32 - 1.
-  Anything else is refused (the engine answers 400). The per-asset service
-  takes no other query, and `ls_color` takes no BRC-207 query.
+  A query carrying `type` that is not exactly this is refused (the engine
+  answers 400). Any other query to the per-asset service is one of
+  `ls_color`'s three (0.12.0; refused until 0.11.x); `ls_color` takes no
+  BRC-207 query.
 - There is no wildcard: a token whose lookup is not registered answers
   400 "Lookup service not supported", never an empty list (which would
   mean "not spendable").
@@ -185,13 +191,16 @@ decimals, symbol, icon, ...).
   `deploy+mint` / `deploy+auth` inscription at any output. Nothing else is
   admitted, and nothing about governance is checked. The coins an admitted
   transaction spends are retained.
-- `ls_color_deploys` is `color-lookup` called as that service. Its map
+- Its lookup is `ls_color` (0.12.0; `ls_color_deploys`, a mode of the
+  program by name, until 0.11.x: gone, no alias). The topic feeds the map
   `deploys` (token → nothing; a token id is its deploy outpoint), in the
-  program's one index, holds every deploy the topic admitted. `{tokenId}` answers the deploy output, an
-  output-list of one (empty if none); any other key is refused. A deploy
-  stays listed once spent (a registry); a rejected transaction's deploys are
-  removed. This is the shape of ts-stack's `metadataTokenId`, under its own
-  key.
+  program's one index: every deploy the topic admitted. `{txid,
+  outputIndex}` at a deploy's outpoint (the token id `<txid>_<vout>` read
+  as `{txid, outputIndex: vout}`) answers the deploy output, an output-list
+  of one (empty if none). A deploy stays answered once spent (a registry); a
+  rejected transaction's deploys are removed. `{tokenId}` and
+  `{authoritiesTokenId}` read the token topics' maps, which this topic does
+  not feed.
 - It is switched like a token: registered with `register {topic:
   "tm_color", program: "color-topic"}`, dropped with
   `deregister`. It is not in `config.overlay.topics`: an entry there is
@@ -262,8 +271,8 @@ the routes. A token is two registrations (0.9.0, BRC-207; David Case,
 
 and deregistering reverses both: `{fn: "deregisterLookup", args:
 {service}}`, then `{fn: "deregister", args: {topic}}`. The discovery topic
-`tm_color` is registered by `register` alone (its lookup
-`ls_color_deploys` is the manifest's). The topic's register, in full:
+`tm_color` is registered by `register` alone (its lookup `ls_color` is the
+manifest's). The topic's register, in full:
 
 1. Root sends `{fn: "register", args: {topic, program:
    "color-topic"}}` to the app's box `<app>/register`. The topic is
@@ -298,8 +307,8 @@ and deregistering reverses both: `{fn: "deregisterLookup", args:
    overlay never held it) is submitted the usual way.
 6. From the next step the engine serves the topic, judged by
    `color-topic`: `/submit` with it in `X-Topics`, gossip on it, the
-   listing, and the lookups (`ls_color` and `ls_color_deploys` list no
-   `topics`, so they listen to every topic served; `color-lookup` hears
+   listing, and the lookup (`ls_color` lists no `topics`, so it listens to
+   every topic served; `color-lookup` hears
    each admission once).
 7. Then root sends `registerLookup` for `ls_color_<assetId>`: the engine
    adds it to its registered lookups, the head `<app>/lookups`, and serves
@@ -319,9 +328,8 @@ not remove what the topic admitted or the lookup's index of it.
 
 - `programs`: `overlay` (`bin/overlay.wasm`), `color-topic`,
   `color-lookup`;
-- `config.overlay`: no `topics`; `lookups` `ls_color` and
-  `ls_color_deploys`, each `{"program": "color-lookup"}` with no
-  `topics` list;
+- `config.overlay`: no `topics`; `lookups` `ls_color`, `{"program":
+  "color-lookup"}` with no `topics` list (0.12.0: `ls_color_deploys` gone);
 - the routes, filters and roles (shruggr/skein#143; no senders): the
   route `{"address": "register", "handler": "overlay.register"}` (root's
   `register` / `deregister`, `registerLookup` / `deregisterLookup`, box

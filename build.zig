@@ -10,7 +10,7 @@
 //   1color    the BRC-162 / BRC-161 output parsers, the BSV-21 rules, topic   src/lib.zig
 //             names, the topic's verdict (std only)
 //
-//   zig build         → zig-out/bin/color-topic.wasm (tm_color_<assetId>, tm_color), color-lookup.wasm (ls_color, ls_color_deploys, ls_color_<assetId>)
+//   zig build         → zig-out/bin/color-topic.wasm (tm_color_<assetId>, tm_color), color-lookup.wasm (ls_color, ls_color_<assetId>)
 //   zig build bin     the same, written to bin/*.wasm (committed)
 //   zig build test    the parsers, the rules, the topic, the lookup, natively
 const std = @import("std");

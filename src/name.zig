@@ -16,9 +16,9 @@
 //!   `tm_color_<txid>_<vout>`. Its binary outputs carry the 36-byte id
 //!   (BRC-162: only such a token has one).
 //!
-//! The discovery topic is `tm_color` and its lookup `ls_color_deploys`
-//! (neither carries an asset id: a token topic is `tm_color_` followed by
-//! one). These are BRC-207's wire names (0.10.0, the 1Color rename; David
+//! The discovery topic is `tm_color` and its lookup `ls_color` (neither
+//! carries an asset id: a token topic is `tm_color_` followed by one; 0.12.0:
+//! `ls_color_deploys` is gone, no alias). These are BRC-207's wire names (0.10.0, the 1Color rename; David
 //! Case, 2026-10-15, shruggr/skein#120), with no alias: the names before
 //! them, and `tm_<txid>_<vout>` (0.8.2), are no topic or lookup of ours.
 //!
@@ -39,8 +39,6 @@ pub const topic_prefix = "tm_color_";
 pub const lookup_prefix = "ls_color_";
 /// The discovery topic (shruggr/skein#120 item 11): every token's deploy output, one topic.
 pub const deploys_topic = "tm_color";
-/// Its lookup service.
-pub const deploys_service = "ls_color_deploys";
 
 /// The longest `<txid>_<vout>` suffix: 64 hex, `_`, 10 digits.
 pub const max_suffix_len = 64 + 1 + 10;
@@ -117,7 +115,7 @@ pub fn tokenIdOf(topic: []const u8) ?TokenId {
 }
 
 /// The token a lookup service name carries: `ls_color_<txid>_<vout>`. Null for anything
-/// else, including `ls_color` and the discovery lookup `ls_color_deploys`.
+/// else, including `ls_color`.
 pub fn tokenIdOfLookup(service: []const u8) ?TokenId {
     return idAfter(lookup_prefix, service);
 }

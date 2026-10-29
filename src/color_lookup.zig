@@ -4,17 +4,26 @@
 //! skein-overlay 0.11.0), in one index, the head `<app>/ls_color`
 //! (`spec.index`), whatever name it is called as:
 //!
-//!   ls_color               the queries below
-//!   ls_color_deploys       the discovery lookup (below)
-//!   ls_color_<assetId>     a token's BRC-207 lookup, registered with the engine
-//!                            (`registerLookup`) beside its topic tm_color_<assetId>
+//!   ls_color               the queries below, over whatever topics feed it
+//!                            (the discovery topic tm_color included, 0.12.0)
+//!   ls_color_<assetId>     a token's BRC-207 lookup beside its topic tm_color_<assetId>:
+//!                            BRC-207's queries, and the queries below (0.12.0)
 //!
-//! `ls_color` answers three queries in the shapes of the ts-stack
+//! A lookup is this program under a name; the name pairs it with the topics
+//! that feed it, and the queries are the same under every name (David,
+//! 2026-10-29: "There should be no difference between what these things are
+//! looking up. The only difference is which topic the instance has got access
+//! to."). 0.11.x's discovery lookup `ls_color_deploys` is gone, no alias: a
+//! deploy is looked up by its outpoint (the token id `<txid>_<vout>` IS it) as
+//! `{txid, outputIndex}` under the name over `tm_color`, `ls_color`.
+//!
+//! Three queries in the shapes of the ts-stack
 //! BRC-162 lookup (Deggen's, ts-stack packages/overlays/topics):
 //!
 //!   {tokenId, limit?, skip?}             the token's unspent value outputs, in outpoint order
 //!   {authoritiesTokenId, limit?, skip?}  the token's unspent authority outputs (and its deploy), in outpoint order
-//!   {txid, outputIndex}                  the value or authority output at that outpoint, if unspent
+//!   {txid, outputIndex}                  the value or authority output at that outpoint, if unspent;
+//!                                        a deploy `tm_color` admitted, spent or not (a registry)
 //!
 //! The first of `authoritiesTokenId`, `tokenId` present answers; else the
 //! outpoint. `limit` is 1 to 100 (default 100), `skip` 0 to 100000 (default
@@ -44,14 +53,15 @@
 //! spender; `rejected` drops the transaction's outputs and gives back the
 //! ones it had spent. A hook for a topic that is not a token's does nothing.
 //!
-//! The same program is the discovery lookup `ls_color_deploys` (by the
-//! service name it is called as; the hooks by the topic): over `tm_color` only, the map
+//! The discovery topic `tm_color` feeds (by the topic, as every hook) the map
 //!
 //!   deploys      tok → null                       every admitted deploy (a token id is its deploy outpoint)
 //!
 //! `admitted` adds each valid deploy output (token.zig `deployOf`), `spent`
 //! does nothing (a registry), `rejected` removes the transaction's deploys;
-//! `{tokenId}` answers the deploy output, an output-list of one.
+//! `{txid, outputIndex}` at a deploy's outpoint answers the deploy output, an
+//! output-list of one, spent or not. `{tokenId}` and `{authoritiesTokenId}`
+//! read the token topics' maps only.
 //!
 //! **BRC-207** (David Case, 2026-10-08): called as `ls_color_<assetId>`, it
 //! answers
@@ -65,8 +75,9 @@
 //! the queried outpoints, each once, in the query's order: spendability —
 //! those in `admitted` for the asset and unspent (the chain state names no
 //! spender, as the engine's `inTopic` reads it); admission — those in
-//! `admitted`, spent or not. An empty list is a valid "no". Any other query
-//! there is refused.
+//! `admitted`, spent or not. An empty list is a valid "no". A query with a
+//! `type` is a BRC-207 one; any other is one of the three above (0.12.0;
+//! until 0.11.x refused there).
 const std = @import("std");
 const c = @import("chain");
 const lookup = @import("lookup");
@@ -83,13 +94,8 @@ const eql = std.mem.eql;
 pub const service_name = "ls_color";
 /// The index every name of the program reads and writes (skein-overlay 0.11.0): `<app>/ls_color`.
 pub const index_name = service_name;
-/// The discovery topic's lookup (shruggr/skein#120 item 11): `{tokenId}` → the token's deploy output.
-pub const deploys_service = color.name.deploys_service;
+/// The discovery topic (BRC-207 "Deployment discovery"): it feeds the map `deploys`.
 const deploys_topic = color.name.deploys_topic;
-
-fn isDeploys(svc: *const Service) bool {
-    return eql(u8, svc.name, deploys_service);
-}
 
 pub const spec: lookup.Spec = .{
     .maps = &.{ "values", "authorities", "outputs", "deploys", "admitted" },
@@ -279,13 +285,6 @@ fn page(a: Allocator, svc: *Service, index: []const u8, id: bsv21.TokenId, limit
     return out;
 }
 
-/// The discovery lookup's query: `{tokenId}` and nothing else.
-pub fn parseDeploysQuery(q: Value) !bsv21.TokenId {
-    if (q != .map) return error.BadQuery;
-    for (q.map) |e| if (!eql(u8, e.key, "tokenId")) return error.BadQuery;
-    return (try tokenField(q, "tokenId")) orelse error.UnsupportedQuery;
-}
-
 // ---------------------------------------------------------------- BRC-207 (ls_color_<assetId>)
 
 /// The two BRC-207 queries.
@@ -354,20 +353,21 @@ pub fn answer207(a: Allocator, svc: *Service, ch: *lookup.Chain, q: Brc207) ![]c
 }
 
 pub fn answer(a: Allocator, svc: *Service, ch: *lookup.Chain, query: Value) anyerror!lookup.Answer {
-    if (color.name.tokenIdOfLookup(svc.name) != null) return .{ .output_list = try answer207(a, svc, ch, try parse207(a, svc.name, query)) };
-    if (isDeploys(svc)) {
-        const id = try parseDeploysQuery(query);
-        if (!(try svc.map("deploys").has(&tokKey(id)))) return .{ .output_list = &.{} };
-        return .{ .output_list = try a.dupe(lookup.Output, &.{.{ .txid = id.txid, .vout = id.vout }}) };
-    }
-    if (!eql(u8, svc.name, service_name)) return error.UnknownService;
+    const per_asset = color.name.tokenIdOfLookup(svc.name) != null;
+    if (!per_asset and !eql(u8, svc.name, service_name)) return error.UnknownService;
+    // A BRC-207 query (it carries a `type`) under a token's name; the three below under every name.
+    if (per_asset and query == .map and query.get("type") != null) return .{ .output_list = try answer207(a, svc, ch, try parse207(a, svc.name, query)) };
     switch (try parseQuery(query)) {
         .values => |p| return .{ .output_list = try page(a, svc, "values", p.id, p.limit, p.skip) },
         .authorities => |p| return .{ .output_list = try page(a, svc, "authorities", p.id, p.limit, p.skip) },
         .outpoint => |o| {
-            const v = (try svc.map("outputs").get(&opKey(o.txid, o.vout))) orelse return .{ .output_list = &.{} };
-            if ((try entryOf(v)).spender != null) return .{ .output_list = &.{} };
-            return .{ .output_list = try a.dupe(lookup.Output, &.{o}) };
+            const op = opKey(o.txid, o.vout);
+            if (try svc.map("outputs").get(&op)) |v| {
+                if ((try entryOf(v)).spender == null) return .{ .output_list = try a.dupe(lookup.Output, &.{o}) };
+            }
+            // A deploy the discovery topic admitted: kept once spent (a registry).
+            if (try svc.map("deploys").has(&op)) return .{ .output_list = try a.dupe(lookup.Output, &.{o}) };
+            return .{ .output_list = &.{} };
         },
     }
 }
@@ -376,24 +376,19 @@ pub fn metadata(a: Allocator, service: []const u8) anyerror!lookup.Metadata {
     if (color.name.tokenIdOfLookup(service)) |id| {
         var tb: [color.name.max_suffix_len]u8 = undefined;
         return .{
-            .short_description = try std.fmt.allocPrint(a, "1Color token {s} (BRC-207): color-spendability and color-admission over its topic tm_color_{s}.", .{ color.name.tokenIdText(&tb, id), color.name.tokenIdText(&tb, id) }),
+            .short_description = try std.fmt.allocPrint(a, "1Color token {s} (BRC-207): color-spendability and color-admission over its topic tm_color_{s}; its outputs by token id and by outpoint.", .{ color.name.tokenIdText(&tb, id), color.name.tokenIdText(&tb, id) }),
             .version = version,
             .information_url = "https://github.com/shruggr/skein-1color",
         };
     }
-    if (eql(u8, service, deploys_service)) return .{
-        .short_description = "1Color token deploys (BRC-207 deployment discovery): a token id's deploy output, with the metadata it was deployed with.",
-        .version = version,
-        .information_url = "https://github.com/shruggr/skein-1color",
-    };
     return .{
-        .short_description = "1Color (BRC-162; BRC-207) token outputs: a token's unspent value outputs, its authority outputs, one output by outpoint.",
+        .short_description = "1Color (BRC-162; BRC-207) token outputs over the topics that feed it: a token's unspent value outputs, its authority outputs, one output by outpoint (a deploy tm_color admitted, spent or not).",
         .version = version,
         .information_url = "https://github.com/shruggr/skein-1color",
     };
 }
 
-pub const version = "0.4.0";
+pub const version = "0.5.0";
 
 pub fn documentation(_: Allocator, service: []const u8) anyerror![]const u8 {
     if (color.name.tokenIdOfLookup(service) != null) return
@@ -416,29 +411,18 @@ pub fn documentation(_: Allocator, service: []const u8) anyerror![]const u8 {
     \\
     \\Exactly these five keys; `version` 1; `assetId` and `topic` this service's own; each outpoint
     \\in canonical BRC-36 form (64 lowercase hex characters, a dot, the output index without
-    \\leading zeros). Anything else is refused. Answers are output-lists, each output with its
-    \\transaction's BEEF.
+    \\leading zeros). A query carrying `type` that is not exactly this is refused.
     \\
-    ;
-    if (eql(u8, service, deploys_service)) return
-    \\# 1Color token deploys lookup service (ls_color_deploys)
-    \\
-    \\Indexes the deploy outputs `tm_color` (BRC-207 "Deployment discovery") admits, by
-    \\token id.
-    \\
-    \\- `{ tokenId }`: the token's deploy output, with the metadata it was deployed with in
-    \\  its script. The token id is `<txid>_<vout>` (`<txid>_0` at output 0), a binary
-    \\  deploy's or a BRC-161 JSON deploy's alike; `<txid>` and `<txid>.<vout>` are taken too.
-    \\  An output-list of one, or empty when the deploy was not admitted.
-    \\
-    \\A deploy stays listed once it is spent. Any other key is refused.
+    \\Any other query is one of `ls_color`'s: `{ authoritiesTokenId, limit?, skip? }`,
+    \\`{ tokenId, limit?, skip? }`, `{ txid, outputIndex }` (see `ls_color`). Answers are
+    \\output-lists, each output with its transaction's BEEF.
     \\
     ;
     return
     \\# 1Color token lookup service (ls_color)
     \\
-    \\Indexes the outputs the 1Color token topics (`tm_color_<txid>_<vout>`, BRC-207) admit, by token id and
-    \\outpoint. A token id is the deploy outpoint, the txid in display byte order,
+    \\Indexes the outputs the topics that feed it admit: a token topic's (`tm_color_<txid>_<vout>`,
+    \\BRC-207) by token id and outpoint, the discovery topic's (`tm_color`) deploys by outpoint. A token id is the deploy outpoint, the txid in display byte order,
     \\lowercase, written `<txid>_<vout>` for every token, `<txid>_0` included (BRC-162 "Token
     \\identification": the bare 32-byte txid is the wire form only). A query takes any of
     \\`<txid>`, `<txid>_<vout>`, `<txid>.<vout>`.
@@ -450,7 +434,8 @@ pub fn documentation(_: Allocator, service: []const u8) anyerror![]const u8 {
     \\- `{ authoritiesTokenId, limit?, skip? }`: the token's unspent authority outputs
     \\  (its deploy among them), in outpoint order.
     \\- `{ tokenId, limit?, skip? }`: the token's unspent value outputs, in outpoint order.
-    \\- `{ txid, outputIndex }`: the value or authority output at that outpoint, if unspent.
+    \\- `{ txid, outputIndex }`: the value or authority output at that outpoint, if unspent; a
+    \\  deploy `tm_color` admitted, spent or not (a deploy's outpoint is its token id).
     \\
     \\`limit` is 1 to 100 (default 100) and `skip` is 0 to 100000 (default 0). Anything
     \\else is refused. Outpoint order is the txid in display order, then the output index.
@@ -604,7 +589,7 @@ fn restrictedName(n: []const u8) bool {
 /// chain state (`chain_state`; unmined first, then by block height and position, highest first),
 /// `skip` then `limit` of them. Reads only.
 pub fn tokens(a: Allocator, s: c.store.Store, deploys_state: ?[]const u8, chain_state: ?[]const u8, q: TokensQuery) ![]const Listed {
-    var svc = try Service.loadIndex(a, s, deploys_service, index_name, spec.maps, deploys_state);
+    var svc = try Service.loadIndex(a, s, service_name, index_name, spec.maps, deploys_state);
     // The chain app's state through the SDK's one opener (shruggr/skein-sdk#1): its record's network, else main.
     var ch = try c.open(a, s, chain_state, .main);
     const all = try svc.map("deploys").prefixed(&.{});
