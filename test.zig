@@ -1206,7 +1206,7 @@ test "token id text: `<txid>_<vout>` for every deploy, binary or BRC-161 JSON, `
     }
 }
 
-test "ls_color over tm_color (0.12.0): {txid, outputIndex} at a deploy's outpoint → the deploy output; other topics' outputs by their own rules; kept once spent, dropped on rejection; ls_color_deploys is no service" {
+test "ls_color over tm_color (0.12.1): BRC-207's color-admission with topic tm_color answers a token's deploy, spent or not; color-spendability while unspent; other topics' outputs not; dropped on rejection; ls_color_deploys is no service" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -1218,43 +1218,56 @@ test "ls_color over tm_color (0.12.0): {txid, outputIndex} at a deploy's outpoin
     const t = names.deploys_topic;
     const deploy = f.raws.get("token_deploy").?;
     const d1 = f.raws.get("legacy_deploy1").?;
-    const id = try std.fmt.allocPrint(a, "{s}_0", .{&w.header.toHex(f.id)});
-    const at = struct {
-        fn q(al: std.mem.Allocator, raw: []const u8, vout: u32) ![]const w.cbor.Entry {
-            return al.dupe(w.cbor.Entry, &.{ .{ .key = "txid", .value = .{ .text = try al.dupe(u8, &w.header.toHex(w.beef.txidOf(raw))) } }, .{ .key = "outputIndex", .value = .{ .uint = vout } } });
+    const one: Value = .{ .uint = 1 };
+    const hex0 = try a.dupe(u8, &w.header.toHex(w.beef.txidOf(deploy)));
+    const hex1 = try a.dupe(u8, &w.header.toHex(w.beef.txidOf(d1)));
+    const id0 = try std.fmt.allocPrint(a, "{s}_0", .{hex0});
+    const id1 = try std.fmt.allocPrint(a, "{s}_1", .{hex1});
+    const op0 = try std.fmt.allocPrint(a, "{s}.0", .{hex0});
+    const op1 = try std.fmt.allocPrint(a, "{s}.1", .{hex1});
+    // The exact BRC-207 shape (wallet/0207.md), service ls_color, topic tm_color.
+    const adm = struct {
+        fn q(al: std.mem.Allocator, typ: []const u8, asset: []const u8, ops: []const []const u8) !Value {
+            return q207(al, typ, .{ .uint = 1 }, asset, "tm_color", ops);
         }
     }.q;
 
-    try expectOps(&.{}, try l.ask(try at(a, deploy, 0)));
+    try expectOps(&.{}, try ask207(&l, "ls_color", null, try adm(a, "color-admission", id0, &.{op0})));
     try l.admitted(t, deploy, &.{0});
     try l.admitted(t, d1, &.{1});
-    // The token id `<txid>_<vout>` IS the deploy's outpoint: the deploy output, an output-list of one.
-    try expectOps(&.{opName(a, deploy, 0)}, try l.ask(try at(a, deploy, 0)));
-    try expectOps(&.{opName(a, d1, 1)}, try l.ask(try at(a, d1, 1)));
-    try expectOps(&.{}, try l.ask(try at(a, d1, 0))); // not the deploy output
-    // {tokenId} and {authoritiesTokenId} read the token topics' maps: the discovery feed puts nothing there.
-    try expectOps(&.{}, try l.ask(&.{.{ .key = "tokenId", .value = text(id) }}));
-    try expectOps(&.{}, try l.ask(&.{.{ .key = "authoritiesTokenId", .value = text(id) }}));
+    try expectOps(&.{opName(a, deploy, 0)}, try ask207(&l, "ls_color", null, try adm(a, "color-admission", id0, &.{op0})));
+    try expectOps(&.{opName(a, d1, 1)}, try ask207(&l, "ls_color", null, try adm(a, "color-admission", id1, &.{ op1, op1 })));
+    try expectOps(&.{opName(a, deploy, 0)}, try ask207(&l, "ls_color", null, try adm(a, "color-spendability", id0, &.{op0})));
+    // Exactly the asset's deploy: another outpoint is no "yes".
+    try expectOps(&.{}, try ask207(&l, "ls_color", null, try adm(a, "color-admission", id0, &.{op1})));
+    try expectOps(&.{}, try ask207(&l, "ls_color", null, try adm(a, "color-admission", id1, &.{try std.fmt.allocPrint(a, "{s}.0", .{hex1})})));
+    // Strict: topic tm_color only, assetId canonical, version 1, the two types.
+    try testing.expectError(error.BadQuery, ask207(&l, "ls_color", null, try q207(a, "color-admission", one, id0, try std.fmt.allocPrint(a, "tm_color_{s}", .{id0}), &.{op0})));
+    try testing.expectError(error.BadQuery, ask207(&l, "ls_color", null, try adm(a, "color-admission", hex0, &.{op0})));
+    try testing.expectError(error.BadQuery, ask207(&l, "ls_color", null, try q207(a, "color-admission", .{ .uint = 2 }, id0, "tm_color", &.{op0})));
+    try testing.expectError(error.BadQuery, ask207(&l, "ls_color", null, try adm(a, "color-balance", id0, &.{op0})));
+    // The three queries read the token topics' maps: the discovery feed puts nothing there.
+    try expectOps(&.{}, try l.ask(&.{.{ .key = "authoritiesTokenId", .value = text(id0) }}));
+    try expectOps(&.{}, try l.ask(&.{ .{ .key = "txid", .value = text(hex0) }, .{ .key = "outputIndex", .value = .{ .uint = 0 } } }));
 
-    // A token topic's admission goes by the token's rules: its deploy is an authority output, by outpoint while unspent.
+    // A token topic's admission is not the discovery topic's.
     var buf: [names.max_topic_len]u8 = undefined;
     const ld0 = f.raws.get("legacy_deploy0").?;
+    const hexl = try a.dupe(u8, &w.header.toHex(w.beef.txidOf(ld0)));
     try l.admitted(names.topicName(&buf, .{ .txid = w.beef.txidOf(ld0) }), ld0, &.{0});
-    try expectOps(&.{opName(a, ld0, 0)}, try l.ask(try at(a, ld0, 0)));
+    try expectOps(&.{}, try ask207(&l, "ls_color", null, try adm(a, "color-admission", try std.fmt.allocPrint(a, "{s}_0", .{hexl}), &.{try std.fmt.allocPrint(a, "{s}.0", .{hexl})})));
 
-    // Spent: still answered (a registry). Rejected: gone.
+    // Spent: still admitted (a registry). Rejected: gone.
     try l.spent(t, deploy, 0, f.raws.get("pool_deploy").?);
-    try expectOps(&.{opName(a, deploy, 0)}, try l.ask(try at(a, deploy, 0)));
+    try expectOps(&.{opName(a, deploy, 0)}, try ask207(&l, "ls_color", null, try adm(a, "color-admission", id0, &.{op0})));
     try l.rejected(t, deploy);
-    try expectOps(&.{}, try l.ask(try at(a, deploy, 0)));
-    try expectOps(&.{opName(a, d1, 1)}, try l.ask(try at(a, d1, 1)));
+    try expectOps(&.{}, try ask207(&l, "ls_color", null, try adm(a, "color-admission", id0, &.{op0})));
+    try expectOps(&.{opName(a, d1, 1)}, try ask207(&l, "ls_color", null, try adm(a, "color-admission", id1, &.{op1})));
 
     // ls_color_deploys is no name of the program (no alias).
-    l.service = "ls_color_deploys";
-    try testing.expectError(error.UnknownService, l.ask(&.{.{ .key = "tokenId", .value = text(id) }}));
-    l.service = ls.service_name;
+    try testing.expectError(error.UnknownService, ask207(&l, "ls_color_deploys", null, .{ .map = &.{.{ .key = "tokenId", .value = text(id0) }} }));
     const ld = try lookup.describe(a, ls, "documentation", .{ .map = &.{ .{ .key = "kind", .value = text("lookup-describe") }, .{ .key = "service", .value = text(ls.service_name) } } });
-    try testing.expect(std.mem.indexOf(u8, ld.getText("documentation").?, "(a deploy's outpoint is its token id)") != null);
+    try testing.expect(std.mem.indexOf(u8, ld.getText("documentation").?, "topic: \"tm_color\"") != null);
 }
 
 // --- the token list (fn "tokens", a read: shruggr/skein#120, #135) ---
@@ -1602,7 +1615,7 @@ test "BRC-207: color-spendability and color-admission over ls_color_<assetId>: e
     try expectOps(&.{}, try ask207(&l, try a.dupe(u8, names.lookupName(&lb2, other)), null, try q207(a, admit, one, other_asset, try a.dupe(u8, names.topicName(&tb2, other)), &.{dot(a, deploy, 0)})));
 }
 
-test "BRC-207: queries validated strictly: version 1, the service's own assetId and topic, canonical <txid>.<vout>, exactly five keys; the per-asset service takes ls_color's queries too (0.12.0); ls_color takes no BRC-207 query" {
+test "BRC-207: queries validated strictly: version 1, the service's own assetId and topic, canonical <txid>.<vout>, exactly five keys; the per-asset service takes no other query; ls_color takes BRC-207 queries only with topic tm_color (0.12.1)" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -1659,17 +1672,14 @@ test "BRC-207: queries validated strictly: version 1, the service's own assetId 
     dup[3] = .{ .key = "type", .value = text("color-admission") };
     try testing.expectError(error.BadQuery, ls.parse207(a, service, .{ .map = dup }));
 
-    // Through `answer`: the per-asset service takes these and ls_color's own (0.12.0: no difference in
-    // what the names look up); a query with a `type` is a BRC-207 one there; ls_color refuses them (not
-    // its keys); a name the program does not serve is refused.
+    // Through `answer`: the per-asset service takes only these; ls_color refuses a token topic's form
+    // (its BRC-207 form names tm_color, 0.12.1); a name the program does not serve is refused.
     var l: Ls = .{ .a = a, .s = ms.store() };
-    try testing.expectEqual(@as(usize, 0), (try ask207(&l, service, null, .{ .map = &.{.{ .key = "tokenId", .value = text(asset) }} })).len);
-    try testing.expectEqual(@as(usize, 0), (try ask207(&l, service, null, .{ .map = &.{ .{ .key = "txid", .value = text(hex) }, .{ .key = "outputIndex", .value = one } } })).len);
-    try testing.expectError(error.BadQuery, ask207(&l, service, null, .{ .map = &.{ .{ .key = "type", .value = text("color-balance") }, .{ .key = "tokenId", .value = text(asset) } } }));
-    try testing.expectError(error.BadQuery, ask207(&l, service, null, .{ .map = &.{.{ .key = "limit", .value = text("x") }} }));
+    try testing.expectError(error.BadQuery, ask207(&l, service, null, .{ .map = &.{.{ .key = "tokenId", .value = text(asset) }} }));
     try testing.expectError(error.BadQuery, ask207(&l, ls.service_name, null, full));
     try testing.expectError(error.UnknownService, ask207(&l, "ls_other", null, full));
-    try testing.expectError(error.UnknownService, ls.parse207(a, "ls_color", full));
+    try testing.expectError(error.BadQuery, ls.parse207(a, "ls_color", full));
+    try testing.expectError(error.UnknownService, ls.parse207(a, "ls_other", full));
     try testing.expectEqual(@as(usize, 0), (try ask207(&l, service, null, full)).len);
 }
 
@@ -1695,12 +1705,12 @@ test "one index for the program's names (skein-overlay 0.11.0): a hook under any
     l.service = lname;
     try l.admitted(tname, deploy, &.{0});
     try testing.expectEqualStrings("ls_color", (try ms.store().getValue(a, l.state.?)).getText("service").?);
-    const by_op = [_]w.cbor.Entry{ .{ .key = "txid", .value = text(id[0..64]) }, .{ .key = "outputIndex", .value = .{ .uint = 0 } } };
-    for ([_][]const u8{ ls.service_name, lname }) |name| {
-        l.service = name;
-        try expectOps(&.{opName(a, deploy, 0)}, try l.ask(&.{.{ .key = "authoritiesTokenId", .value = text(id) }}));
-        try expectOps(&.{opName(a, deploy, 0)}, try l.ask(&by_op));
-    }
+    l.service = ls.service_name;
+    try expectOps(&.{opName(a, deploy, 0)}, try l.ask(&.{.{ .key = "authoritiesTokenId", .value = text(id) }}));
+    // BRC-207's admission of the deploy under both names: over tm_color (ls_color) and over its topic.
+    const dot0 = try std.fmt.allocPrint(a, "{s}.0", .{id[0..64]});
+    try expectOps(&.{opName(a, deploy, 0)}, try ask207(&l, ls.service_name, null, try q207(a, "color-admission", .{ .uint = 1 }, id, "tm_color", &.{dot0})));
+    try expectOps(&.{opName(a, deploy, 0)}, try ask207(&l, lname, null, try q207(a, "color-admission", .{ .uint = 1 }, id, tname, &.{dot0})));
     // The token list reads the same index.
     try testing.expectEqual(@as(usize, 1), (try ls.tokens(a, ms.store(), l.state, null, .{})).len);
 }

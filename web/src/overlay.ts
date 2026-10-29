@@ -33,9 +33,9 @@ import { DISCOVERY } from "./tokens/list";
 export { DISCOVERY };
 
 /**
- * The lookup over the discovery topic `tm_color` (skein-1color 0.12.0): `ls_color`, the deploy asked
- * by its outpoint `{txid, outputIndex}` (the token id `<txid>_<vout>` IS that outpoint).
- * `ls_color_deploys` is gone.
+ * The lookup over the discovery topic `tm_color` (skein-1color 0.12.1): `ls_color`, the deploy asked
+ * by BRC-207's `color-admission` query with `topic: "tm_color"` (the token id `<txid>_<vout>`, its
+ * outpoint `<txid>.<vout>`). `ls_color_deploys` is gone.
  */
 export const DEPLOYS_LOOKUP = "ls_color";
 
@@ -95,14 +95,14 @@ export function tokenOfTopic(topic: string): { tokenId: string; txid: string; vo
   return { tokenId: `${m[1]}_${vout}`, txid: m[1]!, vout };
 }
 
-/** The deploy's BEEF from the discovery lookup (`ls_color {txid, outputIndex}` at the deploy's outpoint); undefined when it has none. */
+/** The deploy's BEEF from the discovery lookup (`ls_color`, BRC-207 `color-admission` of the deploy's outpoint over `tm_color`); undefined when it has none. */
 export async function lookupDeployBeef(appBase: string, tokenId: string, f: Fetch): Promise<Uint8Array | undefined> {
   const m = /^([0-9a-f]{64})_(0|[1-9]\d*)$/.exec(tokenId);
   if (!m) throw new Error(`${tokenId}: not a token id (<txid>_<vout>)`);
   const r = await f(`${appBase}/lookup`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ service: DEPLOYS_LOOKUP, query: { txid: m[1], outputIndex: Number(m[2]) } }),
+    body: JSON.stringify({ service: DEPLOYS_LOOKUP, query: { type: "color-admission", version: 1, assetId: tokenId, topic: DISCOVERY, outpoints: [`${m[1]}.${m[2]}`] } }),
   });
   const text = await r.text();
   if (r.status !== 200) throw new Error(`lookup ${DEPLOYS_LOOKUP}: HTTP ${r.status} ${text.slice(0, 200)}`);

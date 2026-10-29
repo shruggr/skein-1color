@@ -12,7 +12,7 @@ BRC-207's `color` or this repo's `1color`, with no alias (CHANGELOG.md).
 | component | file | role | what |
 |---|---|---|---|
 | topic manager | `bin/color-topic.wasm`, `src/color_topic.zig` | `color-topic` | judges `tm_color_<assetId>` by the token rules |
-| lookup service | `bin/color-lookup.wasm`, `src/color_lookup.zig` | `color-lookup` | `ls_color`: three queries over its index, a deploy `tm_color` admitted by its outpoint among them (0.12.0); `ls_color_<assetId>`: BRC-207's two queries (0.9.0) and `ls_color`'s three (0.12.0); fn `tokens`: the token list, a read (0.7.0); one index, `<app>/ls_color`, for every name |
+| lookup service | `bin/color-lookup.wasm`, `src/color_lookup.zig` | `color-lookup` | `ls_color`: three queries over its index, and over `tm_color` BRC-207's two with `topic: "tm_color"` (0.12.1); `ls_color_<assetId>`: BRC-207's two queries (0.9.0); fn `tokens`: the token list, a read (0.7.0); one index, `<app>/ls_color`, for every name |
 | discovery topic | the same program as the topic manager | `color-topic` | `tm_color`: every token's deploy output |
 | the library | `src/lib.zig` (module `1color`) | | the parsers, the rules, topic names, the verdict |
 | the engine | `bin/overlay.wasm` | `overlay` | shruggr/skein-overlay 0.16.0: serves the topics and lookups, keeps the registered sets (`register` / `deregister`, `registerLookup` / `deregisterLookup`), answers the sync protocol `/skein/overlay/sync/1.0.0` by its filter `sync` on the manifest's libp2p row (0.11.0), and takes a catch-up's fetched BEEFs on the receive row `/skein/overlay/beef/1.0.0` (filter `kernel.beef`, handler `overlay.submit`; 0.11.1) |
@@ -96,17 +96,16 @@ admitted transaction and topic, whatever its names, and every name reads
 the one index). The hooks go by the topic, never by the name.
 
 `ls_color`, the query shapes of the ts-stack BRC-162 lookup (Deggen's,
-`packages/overlays/topics`, its lookup docs), the same under every name of
-the program (0.12.0; David, 2026-10-29: "There should be no difference
-between what these things are looking up. The only difference is which
-topic the instance has got access to."). The first key present, in this
-order, answers:
+`packages/overlays/topics`, its lookup docs). (David, 2026-10-29: "There
+should be no difference between what these things are looking up. The only
+difference is which topic the instance has got access to.") The first key
+present, in this order, answers:
 
 | query | answer |
 |---|---|
 | `{authoritiesTokenId, limit?, skip?}` | the token's unspent authority outputs, its deploy among them, in outpoint order |
 | `{tokenId, limit?, skip?}` | the token's unspent value outputs, in outpoint order |
-| `{txid, outputIndex}` | the value or authority output at that outpoint, if unspent; a deploy the discovery topic admitted, spent or not (0.12.0: a token id `<txid>_<vout>` is its deploy's outpoint) |
+| `{txid, outputIndex}` | the value or authority output at that outpoint, if unspent |
 
 - A token id is taken as `<txid>`, `<txid>_<vout>` or `<txid>.<vout>`
   ("Token ids" above). Lowercase hex in display order; the vout decimal
@@ -168,10 +167,10 @@ spendability contract"; the wire names `color`, 0.10.0):
   this service's own, written exactly (`<txid>_<vout>`,
   `tm_color_<txid>_<vout>`); each outpoint canonical BRC-36 dot form, 64
   lowercase hex, `.`, the index without leading zeros, at most 2^32 - 1.
-  A query carrying `type` that is not exactly this is refused (the engine
-  answers 400). Any other query to the per-asset service is one of
-  `ls_color`'s three (0.12.0; refused until 0.11.x); `ls_color` takes no
-  BRC-207 query.
+  Anything else is refused (the engine answers 400). The per-asset service
+  takes no other query. `ls_color` takes the same shape with `topic:
+  "tm_color"` only (0.12.1, "The discovery topic" below); a token topic's
+  form there is refused.
 - There is no wildcard: a token whose lookup is not registered answers
   400 "Lookup service not supported", never an empty list (which would
   mean "not spendable").
@@ -194,13 +193,22 @@ decimals, symbol, icon, ...).
 - Its lookup is `ls_color` (0.12.0; `ls_color_deploys`, a mode of the
   program by name, until 0.11.x: gone, no alias). The topic feeds the map
   `deploys` (token → nothing; a token id is its deploy outpoint), in the
-  program's one index: every deploy the topic admitted. `{txid,
-  outputIndex}` at a deploy's outpoint (the token id `<txid>_<vout>` read
-  as `{txid, outputIndex: vout}`) answers the deploy output, an output-list
-  of one (empty if none). A deploy stays answered once spent (a registry); a
-  rejected transaction's deploys are removed. `{tokenId}` and
-  `{authoritiesTokenId}` read the token topics' maps, which this topic does
-  not feed.
+  program's one index: every deploy the topic admitted. A deploy is asked
+  by BRC-207's query (0.12.1; David, 2026-10-29: BRC-207's form, not one of
+  ours), the topic `tm_color`:
+
+  ```json
+  {"service": "ls_color",
+   "query": {"type": "color-admission", "version": 1, "assetId": "<txid>_<vout>", "topic": "tm_color", "outpoints": ["<txid>.<vout>"]}}
+  ```
+
+  `color-admission` answers, of the queried outpoints, the asset's deploy
+  if the topic admitted it (an output-list of it with its BEEF, else
+  empty), spent or not (a registry); `color-spendability` the same while
+  the chain state names no spender. Only the asset's own deploy outpoint
+  is ever a "yes". A rejected transaction's deploys are removed. The three
+  queries above read the token topics' maps, which this topic does not
+  feed.
 - It is switched like a token: registered with `register {topic:
   "tm_color", program: "color-topic"}`, dropped with
   `deregister`. It is not in `config.overlay.topics`: an entry there is

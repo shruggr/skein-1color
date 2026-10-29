@@ -4,6 +4,31 @@ Released versions of skein-1color (skein-mandala until 0.9.2). Versions
 before 0.10.0 are in the git history (each release commit names what
 changed).
 
+## 0.12.1 (2026-10-29)
+
+The deploy lookup takes BRC-207's query form, not ours (David, 2026-10-29,
+correcting 0.12.0): over the discovery topic, `ls_color` answers BRC-207's
+query with `topic: "tm_color"`:
+
+```json
+{"service": "ls_color", "query": {"type": "color-admission", "version": 1, "assetId": "<txid>_<vout>", "topic": "tm_color", "outpoints": ["<txid>.<vout>"]}}
+```
+
+`color-admission`: of the queried outpoints, the asset's deploy if
+`tm_color` admitted it, spent or not (a registry); `color-spendability`:
+the same while the chain state names no spender. Validated as the per-asset
+form (five keys, version 1, `assetId` canonical, outpoints BRC-36 dot form),
+the topic exactly `tm_color`.
+
+- 0.12.0's additions are withdrawn: `{txid, outputIndex}` answers unspent
+  value or authority outputs only, as until 0.11.x (no deploy registry
+  there); `ls_color_<assetId>` takes BRC-207's queries only, as until
+  0.11.x. `ls_color_deploys` stays gone.
+- Pages: `lookupDeployBeef` asks `ls_color` the `color-admission` query
+  above. `www/` rebuilt.
+- color-lookup version 0.5.1; `bin/color-lookup.wasm` rebuilt; manifest
+  version 0.12.1.
+
 ## 0.12.0 (2026-10-29)
 
 One lookup name over the discovery topic (David, 2026-10-29: "There should
