@@ -12,6 +12,14 @@
 //! `documentation` answer the overlay's listing and documentation routes
 //! (skein-overlay#2).
 //!
+//! **Undecided** (0.13.0; skein-overlay 0.19.0's MissingParents): a transfer
+//! whose judgement does not admit every output of the token while one of its
+//! inputs' source transactions cannot be read (not in the BEEF, not held) is
+//! not refused: `identify` fails `MissingParents` with every source it cannot
+//! read, and the engine wants them and judges it again. A deploy needs no
+//! parents; a transaction it can judge completely, or whose sources are all
+//! read, is decided as before.
+//!
 //! The topics served are the engine's: the owner registers each with the
 //! overlay engine, `register {topic, program: "color-topic"}`, and drops it
 //! with `deregister {topic}` (skein-overlay 0.6.0 "Register a topic"); a
@@ -47,7 +55,16 @@ pub fn identify(a: Allocator, call: topic.Call) anyerror!topic.Instructions {
         return .{ .outputs_to_admit = d.outputs_to_admit, .coins_to_retain = d.coins_to_retain };
     }
     const id = token.tokenIdOf(call.topic) orelse return error.UnknownTopic;
-    const v = try token.judge(a, id, try txOf(a, call), call.previous_coins);
+    const tx = try txOf(a, call);
+    // Undecided is not rejected (0.13.0, David 2026-10-30): a judgement that does not admit every
+    // output of the token, while an input's source cannot be read here, may be missing the token's
+    // inputs — fail MissingParents naming every source it lacks (skein-overlay 0.19.0); the engine
+    // wants them and judges again. A complete judgement, or one with every source read, decides.
+    if (!(try token.complete(a, id, tx, call.previous_coins))) {
+        const lacking = try call.lacking();
+        if (lacking.len > 0) return topic.missingParents(lacking);
+    }
+    const v = try token.judge(a, id, tx, call.previous_coins);
     return .{ .outputs_to_admit = v.outputs_to_admit, .coins_to_retain = v.coins_to_retain };
 }
 
@@ -71,7 +88,7 @@ pub fn metadata(a: Allocator, t: []const u8) anyerror!topic.Metadata {
     };
 }
 
-pub const version = "0.4.0";
+pub const version = "0.5.0";
 
 pub fn documentation(_: Allocator, t: []const u8) anyerror![]const u8 {
     if (eql(u8, t, color.name.deploys_topic)) return

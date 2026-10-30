@@ -4,7 +4,7 @@ The 1Color token (BRC-162; BRC-207) overlay components for a
 [skein](https://github.com/shruggr/skein): a topic manager and a lookup
 service, as programs an overlay app carries in its tree, and the token
 library they are built on, as a Zig package, and two pages an app that
-carries the components serves. Version **0.12.1**.
+carries the components serves. Version **0.13.0**.
 
 0.10.0 is the 1Color rename, on BRC-207's wire names
 (David Case, 2026-10-15, shruggr/skein#120): the repo `skein-1color`, the
@@ -427,9 +427,9 @@ checkout: `zig build --fork=../skein-overlay`.
 
 | | |
 |---|---|
-| this app, its programs and package | 0.12.1 (tag `v0.12.1`) |
+| this app, its programs and package | 0.13.0 (tag `v0.13.0`) |
 | the pages | `@1sat/actions`, `@1sat/react`, `@1sat/connect`, `@1sat/templates` 0.1.0 (published; on `@bsv/sdk` 4), `@bsv/sdk` aliased to `npm:@bopen-io/sdk@4.0.1` and `@bsv/color-permission-module` to `npm:@bopen-io/color-permission-module@0.1.0` (the interim @bopen-io repack of ts-stack #1243 until upstream publishes; an npm `overrides` entry keeps one copy of `@bsv/sdk`), `web/package.json`, exact; skein's client at `web/lib/SKEIN_REV` (the build also needs the package `buffer` to resolve from that checkout, for its `web/shims/buffer.ts`: a `node_modules` there, or a link to `web/node_modules`). The committed `www/` is the 0.10.1 build (unchanged in 0.11.0 to 0.11.3). |
-| skein-overlay | v0.16.1 by tag URL and hash in `build.zig.zon` (modules `topic`, `lookup`, `sk`); the engine in `bin/` is its build |
+| skein-overlay | v0.19.0 by tag URL and hash in `build.zig.zon` (modules `topic`, `lookup`, `sk`); the engine in `bin/` is its build |
 | skein-sdk | v0.12.0, through skein-overlay (modules `chain`, `sk`, `cbor`) |
 | requires | `chain/1` (shruggr/skein-chain 0.3.0) |
 | skein | log format 10, the BEEF envelope beside the pointer record (shruggr/skein#146); the routes / filters / roles manifest (shruggr/skein#143; 0.8.0: `dispatch` and `reads` became `routes`, the `register` box root's, the reads read routes whose filters answer) |

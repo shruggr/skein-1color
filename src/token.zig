@@ -51,6 +51,19 @@ pub fn judgeDeploys(a: std.mem.Allocator, tx: bsv21.Tx, previous_coins: []const 
     return .{ .outputs_to_admit = admit.items, .coins_to_retain = if (admit.items.len > 0) try a.dupe(u32, previous_coins) else &.{} };
 }
 
+/// Whether the judgement of `tx` for token `id` is complete with what it reads (0.13.0): every
+/// output of the token is admitted, or refused by the one-way migration rule. When it is not (a
+/// shortfall, a mint or authority output with no authority in), an input whose source the caller
+/// cannot read might be the token's — the topic is then undecided, not rejected (color_topic.zig).
+pub fn complete(a: std.mem.Allocator, id: bsv21.TokenId, tx: bsv21.Tx, previous_coins: []const u32) !bool {
+    const j = try bsv21.judge(a, id, tx, previous_coins);
+    var n: usize = 0;
+    for (tx.outputs, 0..) |o, i| {
+        if ((try bsv21.tokenOf(a, id, tx.txid, @intCast(i), o.script)) != null) n += 1;
+    }
+    return j.outputs.len + j.refused.len >= n;
+}
+
 pub const Verdict = struct {
     outputs_to_admit: []const u32 = &.{},
     coins_to_retain: []const u32 = &.{},

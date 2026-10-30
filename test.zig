@@ -1093,7 +1093,7 @@ test "program: metadata and documentation through the topic contract's describe"
     const m = try topic.describe(a, program, "metadata", arg);
     try testing.expectEqualStrings(t, m.getText("name").?);
     try testing.expect(std.mem.indexOf(u8, m.getText("shortDescription").?, "a5a5") != null);
-    try testing.expectEqualStrings("0.4.0", m.getText("version").?);
+    try testing.expectEqualStrings("0.5.0", m.getText("version").?);
     const d = try topic.describe(a, program, "documentation", arg);
     try testing.expect(std.mem.startsWith(u8, d.getText("documentation").?, "# 1Color token topic"));
     const ld = try lookup.describe(a, ls, "documentation", .{ .map = &.{ .{ .key = "kind", .value = text("lookup-describe") }, .{ .key = "service", .value = text("ls_color") } } });
@@ -1713,4 +1713,50 @@ test "one index for the program's names (skein-overlay 0.11.0): a hook under any
     try expectOps(&.{opName(a, deploy, 0)}, try ask207(&l, lname, null, try q207(a, "color-admission", .{ .uint = 1 }, id, tname, &.{dot0})));
     // The token list reads the same index.
     try testing.expectEqual(@as(usize, 1), (try ls.tokens(a, ms.store(), l.state, null, .{})).len);
+}
+
+test "undecided (0.13.0, skein-overlay 0.19.0): a transfer whose token sources cannot be read fails MissingParents naming every source it lacks; with them read it is decided; a deploy and a funding-only transaction never want" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ms = w.store.MemStore.init(testing.allocator);
+    defer ms.deinit();
+    const s = ms.store();
+    const f = try Fixtures.init(a);
+    var buf: [names.max_topic_len]u8 = undefined;
+    const tname = names.topicName(&buf, .{ .txid = f.id });
+
+    // The swap alone: its inputs' sources (the pool, the funding) not in the store; no previous coin
+    // here — the token outputs are not covered: undecided, not refused.
+    const swap = try s.putBitcoin(a, .tx, f.raws.get("swap_bsv_in").?);
+    const swap_tx = try bsvz.transaction.Transaction.parse(a, f.raws.get("swap_bsv_in").?);
+    try testing.expectError(error.MissingParents, topic.judge(a, s, program.identify, try callArgs(a, tname, swap, &.{})));
+    var want: std.ArrayList([32]u8) = .empty;
+    outer: for (swap_tx.inputs) |in| {
+        for (want.items) |x| if (std.mem.eql(u8, &x, &in.previous_outpoint.txid.bytes)) continue :outer;
+        try want.append(a, in.previous_outpoint.txid.bytes);
+    }
+    try testing.expectEqual(want.items.len, topic.lastNeeds().len);
+    for (want.items, topic.lastNeeds()) |x, y| try testing.expectEqualSlices(u8, &x, &y);
+    // The engine reads the same list back out of the error line.
+    const line = try std.mem.concat(a, u8, &.{ "call color-topic.identify: topic: ", try topic.missingText(a, topic.lastNeeds()) });
+    try testing.expectEqual(want.items.len, (try topic.needsOf(a, line)).?.len);
+
+    // The deploy alone (its funding parent not here): decided — needs no parents.
+    const deploy = try s.putBitcoin(a, .tx, f.raws.get("token_deploy").?);
+    const rd = try topic.judge(a, s, program.identify, try callArgs(a, tname, deploy, &.{}));
+    try testing.expectEqualSlices(u32, &.{0}, try uintsOf(a, rd.get("outputsToAdmit").?));
+
+    // A funding-only transaction under the token's topic: no output of the token — decided, takes nothing.
+    const fund = try s.putBitcoin(a, .tx, f.raws.get("fund").?);
+    const rf = try topic.judge(a, s, program.identify, try callArgs(a, tname, fund, &.{}));
+    try testing.expectEqual(@as(usize, 0), (try uintsOf(a, rf.get("outputsToAdmit").?)).len);
+
+    // Its sources read (held), the coin live: decided and admitted, as before.
+    _ = try s.putBitcoin(a, .tx, f.raws.get("pool_deploy").?);
+    const ok = try topic.judge(a, s, program.identify, try callArgs(a, tname, swap, &.{0}));
+    try testing.expectEqualSlices(u32, &.{ 0, 1 }, try uintsOf(a, ok.get("outputsToAdmit").?));
+    // Its sources read but the token input no coin of the topic: decided — the rules refuse it (nothing admitted), no MissingParents.
+    const no = try topic.judge(a, s, program.identify, try callArgs(a, tname, swap, &.{}));
+    try testing.expectEqual(@as(usize, 0), (try uintsOf(a, no.get("outputsToAdmit").?)).len);
 }

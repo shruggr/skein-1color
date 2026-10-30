@@ -4,6 +4,27 @@ Released versions of skein-1color (skein-mandala until 0.9.2). Versions
 before 0.10.0 are in the git history (each release commit names what
 changed).
 
+## 0.13.0 (2026-10-30)
+
+Undecided is not rejected (David, 2026-10-30: "My only real concern is that
+we don't mark items which are undecided as invalid, which would be a
+persistent state."). On skein-overlay 0.19.0's `MissingParents`.
+
+- `color-topic`: judging a token's topic, a transaction whose judgement does
+  not admit every output of the token (a shortfall, a mint or authority
+  output with no authority in) while an input's source transaction cannot be
+  read (not in the BEEF, not held) fails `MissingParents` naming every source
+  it cannot read (`Call.lacking`; it does not classify them). The engine
+  pauses the submission, wants them, and judges it again as each arrives;
+  nothing is recorded as rejected. A deploy needs no parents; a transaction
+  judged completely, or whose sources are all read, is decided as before (a
+  transfer spending a readable output that is no coin of the topic is still
+  refused). `tm_color` (deploys) is unchanged. `token.complete`.
+  color-topic version 0.5.0.
+- skein-overlay v0.19.0 (was v0.16.1): `bin/overlay.wasm` is its engine;
+  `bin/color-topic.wasm` and `bin/color-lookup.wasm` rebuilt. Manifest
+  version 0.13.0. Pages unchanged (`www/` as 0.12.1).
+
 ## 0.12.1 (2026-10-29)
 
 The deploy lookup takes BRC-207's query form, not ours (David, 2026-10-29,
