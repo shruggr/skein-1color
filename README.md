@@ -4,7 +4,7 @@ The 1Color token (BRC-162; BRC-207) overlay components for a
 [skein](https://github.com/shruggr/skein): a topic manager and a lookup
 service, as programs an overlay app carries in its tree, and the token
 library they are built on, as a Zig package, and two pages an app that
-carries the components serves. Version **0.13.0**.
+carries the components serves. Version **0.13.1**.
 
 0.10.0 is the 1Color rename, on BRC-207's wire names
 (David Case, 2026-10-15, shruggr/skein#120): the repo `skein-1color`, the
@@ -98,8 +98,11 @@ runtime, the hooks reaching a lookup program once)
 (docs/1COLOR.md "Registering a topic"), taken in root's box
 `<app>/register` (0.7.7; `<app>/overlay` from 0.6.2), and whose submissions are messages into the
 submission box `<app>/submit`, by message and from `POST /submit` (0.7.6;
-before, the app's own box `<app>`). `bin/overlay.wasm` here is the v0.16.1
-build (0.16.1: the chain app's state read through skein-sdk's one opener,
+before, the app's own box `<app>`). `bin/overlay.wasm` here is the v0.20.0
+build (0.20.0: announce, then fetch — the `<topic>` mesh carries only
+`admit` verdicts, the host fetches the BEEF; no `want` events; every proof
+published; the sync `tail` read; beats every 120 s by default; 0.19.0:
+undecided is not rejected; before it the v0.16.1 build, 0.16.1: the chain app's state read through skein-sdk's one opener,
 `chain.open`, no behaviour change; 0.16.0: a topic's beat carries `terms` from the head `<app>/terms`,
 the record the app writes at runtime, not `config.overlay.terms`, and
 `{fn: "rebeat"}` from the instance itself re-declares every topic's beacon,
@@ -283,12 +286,15 @@ AMM) carries these in its tree and manifest:
      handler: a peer's sync frames (the locator, the admitted lists, a
      transaction's BEEF) are answered by the engine's filter, a read,
      nothing logged. An app that declares no such row does not serve sync.
-   - **The receive row** (0.11.1, skein-overlay 0.15.0):
+   - **The receive row** (0.11.1, skein-overlay 0.15.0; 0.13.1):
      `{"transport": "libp2p", "address": "/skein/overlay/beef/1.0.0",
-     "filters": ["kernel.beef"], "handler": "overlay.submit"}`: each Atomic
-     BEEF a catch-up fetches is handed to this row by the host, as from the
-     serving peer (skein `src/host/sync.ts`). Without it the puller refuses
-     every fetched BEEF ("no route for libp2p:/skein/overlay/beef/1.0.0").
+     "filters": ["kernel.beef"], "handler": "overlay.submit"}`: the host's
+     own entry, not served to peers (skein-overlay 0.20.0: skein's host
+     never handles it inbound). Each Atomic BEEF the host fetches — on a
+     peer's admit, from a peer's tail list, in a pull of mined history — is
+     handed to this row as from the peer it came from (skein
+     `src/host/sync.ts`). Without it the host refuses every fetched BEEF
+     ("no route for libp2p:/skein/overlay/beef/1.0.0").
 4. **The register calls**, made by root once the app is installed, two
    per token it runs: `{"fn": "register", "args": {"topic":
    "tm_color_<assetId>", "program": "color-topic"}}`, then `{"fn":
@@ -427,9 +433,9 @@ checkout: `zig build --fork=../skein-overlay`.
 
 | | |
 |---|---|
-| this app, its programs and package | 0.13.0 (tag `v0.13.0`) |
+| this app, its programs and package | 0.13.1 (tag `v0.13.1`) |
 | the pages | `@1sat/actions`, `@1sat/react`, `@1sat/connect`, `@1sat/templates` 0.1.0 (published; on `@bsv/sdk` 4), `@bsv/sdk` aliased to `npm:@bopen-io/sdk@4.0.1` and `@bsv/color-permission-module` to `npm:@bopen-io/color-permission-module@0.1.0` (the interim @bopen-io repack of ts-stack #1243 until upstream publishes; an npm `overrides` entry keeps one copy of `@bsv/sdk`), `web/package.json`, exact; skein's client at `web/lib/SKEIN_REV` (the build also needs the package `buffer` to resolve from that checkout, for its `web/shims/buffer.ts`: a `node_modules` there, or a link to `web/node_modules`). The committed `www/` is the 0.10.1 build (unchanged in 0.11.0 to 0.11.3). |
-| skein-overlay | v0.19.0 by tag URL and hash in `build.zig.zon` (modules `topic`, `lookup`, `sk`); the engine in `bin/` is its build |
+| skein-overlay | v0.20.0 by tag URL and hash in `build.zig.zon` (modules `topic`, `lookup`, `sk`); the engine in `bin/` is its build |
 | skein-sdk | v0.12.0, through skein-overlay (modules `chain`, `sk`, `cbor`) |
 | requires | `chain/1` (shruggr/skein-chain 0.3.0) |
 | skein | log format 10, the BEEF envelope beside the pointer record (shruggr/skein#146); the routes / filters / roles manifest (shruggr/skein#143; 0.8.0: `dispatch` and `reads` became `routes`, the `register` box root's, the reads read routes whose filters answer) |

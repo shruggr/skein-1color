@@ -4,6 +4,20 @@ Released versions of skein-1color (skein-mandala until 0.9.2). Versions
 before 0.10.0 are in the git history (each release commit names what
 changed).
 
+## 0.13.1 (2026-10-30)
+
+On skein-overlay 0.20.0, the settled overlay sync design (David, 2026-10-30:
+"announce, then fetch"; no wants; every proof published; the tail read).
+
+- skein-overlay v0.20.0 (was v0.19.0): `bin/overlay.wasm` is its engine;
+  `bin/color-topic.wasm` and `bin/color-lookup.wasm` rebuilt (byte-identical:
+  the topic and lookup contracts did not change). The `<topic>`
+  mesh carries only the engine's `admit` verdicts (the host fetches the
+  BEEF); a paused submission asks nobody (no `want` events).
+- The receive row `/skein/overlay/beef/1.0.0` is the host's own entry, not
+  served to peers (skein's host never handles it inbound); the manifest
+  keeps the row and says so. Manifest version 0.13.1. Pages unchanged.
+
 ## 0.13.0 (2026-10-30)
 
 Undecided is not rejected (David, 2026-10-30: "My only real concern is that
