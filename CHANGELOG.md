@@ -4,6 +4,17 @@ Released versions of skein-1color (skein-mandala until 0.9.2). Versions
 before 0.10.0 are in the git history (each release commit names what
 changed).
 
+## 0.13.2 (2026-11-04)
+
+On skein-overlay 0.20.1: `{fn: "rebeat"}` re-declares every topic's liveness
+window (the market's window now) beside its beacon, and each registered
+lookup service's liveness; an instance registered before skein-overlay
+0.20.0 held a 40 s window under 120 s beats until then.
+
+- skein-overlay v0.20.1 (was v0.20.0): `bin/overlay.wasm` is its engine;
+  `bin/color-topic.wasm` and `bin/color-lookup.wasm` rebuilt (byte-identical). Manifest
+  version 0.13.2. Pages unchanged.
+
 ## 0.13.1 (2026-10-30)
 
 On skein-overlay 0.20.0, the settled overlay sync design (David, 2026-10-30:
@@ -36,7 +47,7 @@ persistent state."). On skein-overlay 0.19.0's `MissingParents`.
   refused). `tm_color` (deploys) is unchanged. `token.complete`.
   color-topic version 0.5.0.
 - skein-overlay v0.19.0 (was v0.16.1): `bin/overlay.wasm` is its engine;
-  `bin/color-topic.wasm` and `bin/color-lookup.wasm` rebuilt. Manifest
+  `bin/color-topic.wasm` and `bin/color-lookup.wasm` rebuilt (byte-identical). Manifest
   version 0.13.0. Pages unchanged (`www/` as 0.12.1).
 
 ## 0.12.1 (2026-10-29)
