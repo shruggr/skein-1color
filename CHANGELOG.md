@@ -4,6 +4,13 @@ Released versions of skein-1color (skein-mandala until 0.9.2). Versions
 before 0.10.0 are in the git history (each release commit names what
 changed).
 
+## 0.13.3 (2026-11-04)
+
+On skein-overlay 0.20.2: `rebeat` re-declares the liveness of the configured
+lookup services too — this manifest's `ls_color` (`config.overlay.lookups`),
+which nobody registers. `bin/overlay.wasm` is its engine; the color wasm
+files unchanged. Manifest version 0.13.3. Pages unchanged.
+
 ## 0.13.2 (2026-11-04)
 
 On skein-overlay 0.20.1: `{fn: "rebeat"}` re-declares every topic's liveness
