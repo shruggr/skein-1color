@@ -9,19 +9,23 @@
  * wallet's BRC-104 client (`signedFetch`, skein's `RawBox` AuthFetch). The
  * `Fetch` parameters are there for tests.
  *
- * - `POST <app base>/submit`: the BEEF as the body, `X-Topics` a comma list;
+ * - `POST <host root>/submit`: the BEEF as the body, `X-Topics` a comma list;
  *   BRC-22 (skein-overlay 0.9.1): the request waits and answers the STEAK
  *   `{<topic>: {outputsToAdmit, coinsToRetain, coinsRemoved}}`; 503 with
  *   Retry-After when nothing is decided yet (the submission stands; a
  *   resubmission polls it).
- * - `POST <app base>/lookup {service, query}` →
+ * - `POST <host root>/lookup {service, query}` →
  *   `{type: "output-list", outputs: [{beef, outputIndex}]}`.
  * - `GET <app base>/color/tokens?limit&skip` (a read, plain fetch): the
  *   deploys `tm_color` admitted, `[{tokenId, topic, sym, dec, icon?, txid,
  *   vout}]`, `icon` a 1Color deploy's embedded image as a data URL (a BRC-161
  *   JSON deploy's icon string as written).
  *
- * `<app base>` is `<base>/<app>` (the page's place, src/where.ts). The engine
+ * `<host root>` is the origin of the page's `base` (src/where.ts), any `/@<handle>`
+ * prefix dropped: the skein host routes `/submit` by `X-Topics` and `/lookup`
+ * by `service` at the root of any hostname it serves, so the pages work where
+ * the embedding app serves no overlay (the Open Exchange's swap site).
+ * `<app base>` is `<base>/<app>` (the page's place), the token list's. The engine
  * ignores a topic it does not serve, so a submit to an unregistered topic
  * still lands (and is admitted by no one).
  */
@@ -63,14 +67,19 @@ export function appBaseOf(w: { base: string; app: string }): string {
   return `${w.base}/${w.app}`;
 }
 
+/** The host's root, where `/submit` and `/lookup` are routed by topic and service: the origin of `base`. */
+export function hostRootOf(w: { base: string }): string {
+  return new URL(w.base).origin;
+}
+
 /**
  * Submit a BEEF under topics (BRC-22): the answer, in words — the topics that
  * admitted outputs (from the STEAK), "taken by no topic", or, on a 503, "not
  * decided yet". Any other status is an error. Unsigned: plain `fetch` unless
  * a test passes `f`.
  */
-export async function submitBeef(appBase: string, beef: ArrayLike<number>, topics: string[], f: Fetch = plainFetch): Promise<string> {
-  const r = await f(`${appBase}/submit`, {
+export async function submitBeef(root: string, beef: ArrayLike<number>, topics: string[], f: Fetch = plainFetch): Promise<string> {
+  const r = await f(`${root}/submit`, {
     method: "POST",
     headers: { "content-type": "application/octet-stream", "x-topics": topics.join(",") },
     body: Uint8Array.from(beef) as unknown as BodyInit,
@@ -96,10 +105,10 @@ export function tokenOfTopic(topic: string): { tokenId: string; txid: string; vo
 }
 
 /** The deploy's BEEF from the discovery lookup (`ls_color`, BRC-207 `color-admission` of the deploy's outpoint over `tm_color`); undefined when it has none. */
-export async function lookupDeployBeef(appBase: string, tokenId: string, f: Fetch): Promise<Uint8Array | undefined> {
+export async function lookupDeployBeef(root: string, tokenId: string, f: Fetch): Promise<Uint8Array | undefined> {
   const m = /^([0-9a-f]{64})_(0|[1-9]\d*)$/.exec(tokenId);
   if (!m) throw new Error(`${tokenId}: not a token id (<txid>_<vout>)`);
-  const r = await f(`${appBase}/lookup`, {
+  const r = await f(`${root}/lookup`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ service: DEPLOYS_LOOKUP, query: { type: "color-admission", version: 1, assetId: tokenId, topic: DISCOVERY, outpoints: [`${m[1]}.${m[2]}`] } }),
@@ -145,14 +154,14 @@ export type Submitted = { answer: string; via: "lookup" | "wallet"; topics: stri
  * `f` is the lookup's (signed); the submit is plain `fetch` (`submitF`, for
  * tests).
  */
-export async function submitDeployToTopic(appBase: string, topic: string, wallet: WalletInterface | undefined, f: Fetch, submitF: Fetch = plainFetch): Promise<Submitted> {
+export async function submitDeployToTopic(root: string, topic: string, wallet: WalletInterface | undefined, f: Fetch, submitF: Fetch = plainFetch): Promise<Submitted> {
   const { tokenId } = tokenOfTopic(topic);
-  const found = await lookupDeployBeef(appBase, tokenId, f);
+  const found = await lookupDeployBeef(root, tokenId, f);
   if (found) {
     const topics = [topic];
-    return { answer: await submitBeef(appBase, found, topics, submitF), via: "lookup", topics };
+    return { answer: await submitBeef(root, found, topics, submitF), via: "lookup", topics };
   }
-  return submitWalletDeploy(appBase, topic, wallet, `the discovery lookup has no deploy for ${tokenId}`, submitF);
+  return submitWalletDeploy(root, topic, wallet, `the discovery lookup has no deploy for ${tokenId}`, submitF);
 }
 
 /**
@@ -161,13 +170,13 @@ export async function submitDeployToTopic(appBase: string, topic: string, wallet
  * answered it `missing`, skein-overlay 0.7.8). `why` begins the error when the
  * wallet cannot give it. The submit is plain `fetch` (`submitF`, for tests).
  */
-export async function submitWalletDeploy(appBase: string, topic: string, wallet: WalletInterface | undefined, why = "the overlay does not hold the deploy", submitF: Fetch = plainFetch): Promise<Submitted> {
+export async function submitWalletDeploy(root: string, topic: string, wallet: WalletInterface | undefined, why = "the overlay does not hold the deploy", submitF: Fetch = plainFetch): Promise<Submitted> {
   const { txid, vout } = tokenOfTopic(topic);
   if (!wallet) throw new Error(`${why}, and no wallet is connected to give it`);
   const beef = await walletDeployBeef(wallet, txid, vout);
   if (!beef) throw new Error(`${why}, and this wallet does not hold it (baskets ${deployBaskets(txid, vout).join(", ")})`);
   const topics = [DISCOVERY, topic];
-  return { answer: await submitBeef(appBase, beef, topics, submitF), via: "wallet", topics };
+  return { answer: await submitBeef(root, beef, topics, submitF), via: "wallet", topics };
 }
 
 /** One deploy on the token list (`/<app>/color/tokens`). */

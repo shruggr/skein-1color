@@ -4,6 +4,17 @@ Released versions of skein-1color (skein-mandala until 0.9.2). Versions
 before 0.10.0 are in the git history (each release commit names what
 changed).
 
+## 0.13.4 (2026-11-04)
+
+The pages submit and look up at the host root: `POST <origin>/submit` and
+`POST <origin>/lookup`, which the skein host routes by `X-Topics` and by
+`service` on any hostname it serves (skein 9e4f219), in place of
+`<base>/<app>/submit` and `<base>/<app>/lookup`. On the Open Exchange's swap
+site (`/amm/color/…`) the app paths were served by nobody (HTTP 405, the deploy
+page's error after the wallet module had already submitted the deploy). The
+token list (`<base>/<app>/color/tokens`) is the app's read and stays. `www/`
+rebuilt; programs and manifest unchanged but the version, 0.13.4.
+
 ## 0.13.3 (2026-11-04)
 
 On skein-overlay 0.20.2: `rebeat` re-declares the liveness of the configured

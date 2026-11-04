@@ -22,7 +22,7 @@ import { deploy1Color } from "@1sat-actions/1color/deploy.js";
 import { assetBasket } from "@bsv/color-permission-module";
 import { mount } from "../shell";
 import { whereOf } from "../where";
-import { DISCOVERY, appBaseOf, submitBeef } from "../overlay";
+import { DISCOVERY, hostRootOf, submitBeef } from "../overlay";
 import { deployInput, namesOf, type DeployForm, type Icon } from "./payload";
 import { Id, Ids } from "../Id";
 
@@ -34,7 +34,7 @@ const where = whereOf(location.href);
 async function submitDeploy(tx: number[] | undefined): Promise<{ submitted?: string; submitErr?: string }> {
   if (!where) return { submitErr: "this page's URL names no app, so no overlay to submit to" };
   if (!tx) return { submitErr: "the wallet returned no transaction to submit" };
-  try { return { submitted: await submitBeef(appBaseOf(where), tx, [DISCOVERY]) }; }
+  try { return { submitted: await submitBeef(hostRootOf(where), tx, [DISCOVERY]) }; }
   catch (e) { return { submitErr: (e as Error).message }; }
 }
 

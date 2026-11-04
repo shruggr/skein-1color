@@ -31,7 +31,7 @@ import { mount } from "../shell";
 import { Id, Ids } from "../Id";
 import { whereOf } from "../where";
 import { Instance } from "./instance";
-import { appBaseOf, authFetchOf, listTokens, submitDeployToTopic, submitWalletDeploy, type Listed, type Submitted } from "../overlay";
+import { appBaseOf, authFetchOf, hostRootOf, listTokens, submitDeployToTopic, submitWalletDeploy, type Listed, type Submitted } from "../overlay";
 import { DISCOVERY, answerOf, deployTxidOf, deregisterToken, discovery, lookupAnswerOf, lookupOf, lookupsOf, register, registerToken, topicsOf, type Call, type Seeding } from "./list";
 
 const where = whereOf(location.href);
@@ -67,8 +67,8 @@ function TokensPage() {
     try {
       const f = authFetchOf(inst.box);
       const r: Submitted = walletOnly
-        ? await submitWalletDeploy(appBaseOf(where), t, wallet ?? undefined, "the overlay's chain state does not hold the deploy")
-        : await submitDeployToTopic(appBaseOf(where), t, wallet ?? undefined, f);
+        ? await submitWalletDeploy(hostRootOf(where), t, wallet ?? undefined, "the overlay's chain state does not hold the deploy")
+        : await submitDeployToTopic(hostRootOf(where), t, wallet ?? undefined, f);
       const from = r.via === "lookup" ? "from the discovery lookup" : walletOnly ? "from your wallet" : "from your wallet (the discovery lookup had none)";
       return { ok: true, text: `${prefix}deploy submitted ${from} under ${r.topics.join(", ")}: ${r.answer}.` };
     } catch (e) { return { ok: false, text: `${prefix}deploy not submitted: ${(e as Error).message}` }; }
