@@ -4,6 +4,35 @@ Released versions of skein-1color (skein-mandala until 0.9.2). Versions
 before 0.10.0 are in the git history (each release commit names what
 changed).
 
+## 0.14.0 (2026-11-04)
+
+The discovery routes of the Open Exchange public read API (exchange-api
+decisions D8, D10, D17, D21; the build brief's P13–P16). `color-lookup`
+only; the topic manager and the engine unchanged.
+
+- **`/<app>/color/tokens` → `/<app>/tokens`** (D10: the `color/` segment
+  goes; no alias). Paged `?limit=&skip=` as before; new `?ids=a,b` (D17):
+  one row per id in the query's order, `{tokenId, listed: false}` for an id
+  discovery does not list; an id not exactly `<txid>_<vout>` is a 400.
+  `Cache-Control: public, max-age=5`.
+- **`iconUrl` replaces the data-URL `icon`** (D8): `<tokenId>/icon`,
+  relative to the list, for a 1Color deploy's embedded image (absent when
+  its media type is not `type/subtype`); a BRC-161 JSON deploy's icon
+  string only when it is an http(s) URL. `dataUrlOf` is gone.
+- **A token's reads**: one prefix row `/` (filter `token`,
+  `color-lookup.token`): `/<app>/<txid>_<vout>` the detail JSON
+  `{tokenId, topic, sym, dec, txid, vout, iconUrl?}` (`max-age=5`),
+  `/<app>/<txid>_<vout>/icon` the icon bytes in their media type,
+  `/<app>/<txid>_<vout>/deploy` the deploy's Atomic BEEF
+  (`application/octet-stream`, `chain/state`'s `beefOf`; D21); the two byte
+  reads `public, max-age=31536000, immutable` when the deploy is proven in
+  `chain/state`, else `public, max-age=5`. Anything else under the row 404.
+  Exact routes match first (the kernel's dispatch), so `/tokens`, the
+  engine's listing paths, `/submit` and `/lookup` are untouched.
+- Pages: `listTokens` reads `/<app>/tokens` and resolves `iconUrl` against
+  the list's URL; the tokens page shows the icon from it. `www/` rebuilt.
+  `bin/color-lookup.wasm` rebuilt; manifest version 0.14.0.
+
 ## 0.13.4 (2026-11-04)
 
 The pages submit and look up at the host root: `POST <origin>/submit` and

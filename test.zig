@@ -1355,21 +1355,15 @@ test "deploy metadata: a DAG-CBOR map's sym, dec, icon (the embedded [mediaType,
         try testing.expect(x.sym == null and x.dec == null and x.icon == null);
     }
 
-    // The token list's icon: a data URL of the embedded image; none for a media type a data URL cannot carry.
-    const a = testing.allocator;
-    const url = (try ls.dataUrlOf(a, m.icon.?)).?;
-    defer a.free(url);
-    try testing.expectEqualStrings("data:image/png;base64,iVBORw==", url);
-    const svg = (try ls.dataUrlOf(a, .{ .media_type = "image/svg+xml", .bytes = "" })).?;
-    defer a.free(svg);
-    try testing.expectEqualStrings("data:image/svg+xml;base64,", svg);
+    // The icon a token's `/icon` serves (0.14.0): only an RFC 6838 `type/subtype` media type.
+    try testing.expect(ls.isMediaType(m.icon.?.media_type));
+    try testing.expect(ls.isMediaType("image/svg+xml"));
     for ([_][]const u8{ "", "image", "image/", "/png", "image/png;x=1", "image/png,x", "text/html\"<", "image /png", "image/p\x00g" }) |mt| {
         try testing.expect(!ls.isMediaType(mt));
-        try testing.expect((try ls.dataUrlOf(a, .{ .media_type = mt, .bytes = "x" })) == null);
     }
 }
 
-test "tokens: {limit?, skip?} from the query string or a JSON body; anything else refused" {
+test "tokens: {limit?, skip?} from the query string or a JSON body, or ids in the query string; anything else refused" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -1388,6 +1382,41 @@ test "tokens: {limit?, skip?} from the query string or a JSON body; anything els
         .{ "offset=1", "" },      .{ "limit", "" },        .{ "", "[1]" },         .{ "", "{\"limit\":\"5\"}" },
         .{ "", "{\"skip\":-1}" }, .{ "", "{\"tokenId\":\"a\"}" }, .{ "", "not json" },
     }) |c| try testing.expectError(error.BadQuery, ls.parseTokensQuery(a, c[0], c[1]));
+
+    // ids (0.14.0): comma-separated `<txid>_<vout>` exactly, in order, `%2C` a comma; not beside limit/skip.
+    const t1 = "ab" ** 32 ++ "_0";
+    const t2 = "0c" ** 32 ++ "_12";
+    const ids = (try ls.parseTokensQuery(a, "?ids=" ++ t1 ++ "," ++ t2 ++ "," ++ t1, "")).ids.?;
+    try testing.expectEqual(@as(usize, 3), ids.len);
+    try testing.expectEqualStrings(t1, ids[0]);
+    try testing.expectEqualStrings(t2, ids[1]);
+    try testing.expectEqualStrings(t1, ids[2]);
+    try testing.expectEqualStrings(t2, (try ls.parseTokensQuery(a, "ids=" ++ t1 ++ "%2C" ++ t2, "")).ids.?[1]);
+    try testing.expect((try ls.parseTokensQuery(a, "limit=3", "")).ids == null);
+    for ([_][2][]const u8{
+        .{ "ids=", "" },                         .{ "ids=" ++ t1 ++ ",", "" },               .{ "ids=" ++ "ab" ** 32, "" },
+        .{ "ids=" ++ "AB" ** 32 ++ "_0", "" },   .{ "ids=" ++ "ab" ** 32 ++ "_01", "" },     .{ "ids=" ++ "ab" ** 32 ++ ".0", "" },
+        .{ "ids=" ++ t1 ++ "&limit=5", "" },     .{ "ids=" ++ t1, "{\"skip\":1}" },         .{ "ids=" ++ t1 ++ "&ids=" ++ t2, "" },
+        .{ "ids=" ++ t1 ++ "%2", "" },           .{ "", "{\"ids\":[\"" ++ t1 ++ "\"]}" },
+    }) |c| try testing.expectError(error.BadQuery, ls.parseTokensQuery(a, c[0], c[1]));
+}
+
+test "a token id as the reads take it (0.14.0): `<txid>_<vout>` exactly; the token's paths past the prefix row" {
+    const t1 = "ab" ** 32 ++ "_7";
+    const k = ls.tokenKeyOf(t1).?;
+    try testing.expectEqual(@as(u8, 0xab), k[0]);
+    try testing.expectEqual(@as(u32, 7), std.mem.readInt(u32, k[32..36], .big));
+    for ([_][]const u8{ "", "ab" ** 32, "ab" ** 32 ++ "_", "ab" ** 32 ++ "_00", "ab" ** 32 ++ "_4294967296", "Ab" ** 32 ++ "_0", "ab" ** 31 ++ "_0", "ab" ** 32 ++ "_0x" }) |x|
+        try testing.expect(ls.tokenKeyOf(x) == null);
+    try testing.expect(ls.tokenPathOf(t1).?.part == .detail);
+    try testing.expect(ls.tokenPathOf(t1 ++ "/icon").?.part == .icon);
+    try testing.expect(ls.tokenPathOf(t1 ++ "/deploy").?.part == .deploy);
+    for ([_][]const u8{ "", "tokens", "color/tokens", t1 ++ "/", t1 ++ "/icon/", t1 ++ "/beef", "x/" ++ t1, t1 ++ "/icon/x" }) |x|
+        try testing.expect(ls.tokenPathOf(x) == null);
+    try testing.expect(ls.isHttpUrl("https://example.com/i.png") and ls.isHttpUrl("HTTP://x"));
+    try testing.expect(!ls.isHttpUrl("_0") and !ls.isHttpUrl("ipfs://x") and !ls.isHttpUrl("data:image/png;base64,AA=="));
+    try testing.expectEqualStrings("public, max-age=31536000, immutable", ls.cacheOf(true));
+    try testing.expectEqualStrings("public, max-age=5", ls.cacheOf(false));
 }
 
 test "tokens: every deploy tm_color admitted, its id `<txid>_<vout>`, topic, sym, dec, icon, outpoint; newest first; skip and limit; a rejected deploy gone" {
@@ -1434,8 +1463,8 @@ test "tokens: every deploy tm_color admitted, its id `<txid>_<vout>`, topic, sym
             try testing.expectEqualStrings(try std.fmt.allocPrint(a, "tm_color_{s}_0", .{hex}), x.topic);
             try testing.expectEqualStrings("AB", x.sym);
             try testing.expectEqual(@as(u8, 2), x.dec);
-            // A binary deploy's icon: its embedded image as a data URL (David to review).
-            try testing.expectEqualStrings("data:image/png;base64,AQID", x.icon.?);
+            // A binary deploy's icon: `<tokenId>/icon`, relative to the list (0.14.0).
+            try testing.expectEqualStrings(try std.fmt.allocPrint(a, "{s}_0/icon", .{hex}), x.iconUrl.?);
             try testing.expectEqual(@as(u32, 0), x.vout);
         } else if (std.mem.eql(u8, x.txid, &w.header.toHex(w.beef.txidOf(ld1)))) {
             const h1 = &w.header.toHex(w.beef.txidOf(ld1));
@@ -1445,13 +1474,14 @@ test "tokens: every deploy tm_color admitted, its id `<txid>_<vout>`, topic, sym
             const want = (try brc161.decode(a, (try f.tx(a, "legacy_deploy1")).outputs[1].script)).?;
             try testing.expectEqualStrings(want.sym orelse "", x.sym);
             try testing.expectEqual(want.dec orelse 0, x.dec);
-            // A BRC-161 JSON deploy's icon: its string as written (an outpoint), unchanged.
-            if (want.icon) |ic| try testing.expectEqualStrings(ic, x.icon.?) else try testing.expect(x.icon == null);
+            // A BRC-161 JSON deploy's icon: its string only when an http(s) URL (this one is not).
+            try testing.expect(want.icon == null or !ls.isHttpUrl(want.icon.?));
+            try testing.expect(x.iconUrl == null);
         } else {
             try testing.expectEqualStrings(try std.fmt.allocPrint(a, "{s}_0", .{&w.header.toHex(f.id)}), x.tokenId);
             try testing.expectEqualStrings("", x.sym);
             try testing.expectEqual(@as(u8, 0), x.dec);
-            try testing.expect(x.icon == null);
+            try testing.expect(x.iconUrl == null);
         }
     }
 
@@ -1465,7 +1495,7 @@ test "tokens: every deploy tm_color admitted, its id `<txid>_<vout>`, topic, sym
     try l.rejected(t, mine);
     try testing.expectEqual(@as(usize, 2), (try ls.tokens(a, s, l.state, null, .{})).len);
 
-    // The route: 200 JSON, no null icon; 400 on a bad query.
+    // The route: 200 JSON, no null iconUrl, the `state` cache class; 400 on a bad query.
     const req: Value = .{ .map = &.{ .{ .key = "method", .value = text("GET") }, .{ .key = "query", .value = text("limit=1") } } };
     const r = try ls.tokensRoute(a, s, l.state, null, req);
     try testing.expectEqual(@as(u64, 200), r.getUint("status").?);
@@ -1473,7 +1503,9 @@ test "tokens: every deploy tm_color admitted, its id `<txid>_<vout>`, topic, sym
     try testing.expectEqual(@as(usize, 1), parsed.array.items.len);
     const o = parsed.array.items[0].object;
     for ([_][]const u8{ "tokenId", "topic", "sym", "dec", "txid", "vout" }) |k| try testing.expect(o.get(k) != null);
-    if (o.get("icon")) |ic| try testing.expect(ic == .string);
+    try testing.expect(o.get("icon") == null);
+    if (o.get("iconUrl")) |ic| try testing.expect(ic == .string);
+    try testing.expectEqualStrings("public, max-age=5", r.get("headers").?.getText("cache-control").?);
     const bad: Value = .{ .map = &.{.{ .key = "body", .value = .{ .bytes = "{\"limit\":0}" } }} };
     try testing.expectEqual(@as(u64, 400), (try ls.tokensRoute(a, s, l.state, null, bad)).getUint("status").?);
 
@@ -1483,6 +1515,119 @@ test "tokens: every deploy tm_color admitted, its id `<txid>_<vout>`, topic, sym
     const fa = try ls.asFilterAnswer(a, r);
     try testing.expectEqual(@as(usize, 1), fa.map.len);
     try testing.expectEqual(@as(u64, 200), fa.get("answer").?.getUint("status").?);
+}
+
+/// A token read's request as the front door hands it to the prefix row's filter (match: the row as served).
+fn tokenReq(a: std.mem.Allocator, rest: []const u8) Value {
+    return .{ .map = a.dupe(w.cbor.Entry, &.{
+        .{ .key = "method", .value = text("GET") },
+        .{ .key = "route", .value = text(std.fmt.allocPrint(a, "/1color/{s}", .{rest}) catch @panic("OOM")) },
+        .{ .key = "match", .value = .{ .map = a.dupe(w.cbor.Entry, &.{
+            .{ .key = "address", .value = text("/1color/") },
+            .{ .key = "prefix", .value = .{ .boolean = true } },
+        }) catch @panic("OOM") } },
+    }) catch @panic("OOM") };
+}
+
+test "token reads (0.14.0): ?ids= one row per id in order; /<token>, /<token>/icon, /<token>/deploy; a BRC-161 icon only when http(s); anything else 404" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ms = w.store.MemStore.init(testing.allocator);
+    defer ms.deinit();
+    const s = ms.store();
+    var l: Ls = .{ .a = a, .s = s };
+    const t = names.deploys_topic;
+
+    // A 1Color deploy with an embedded icon ["image/png", h'010203'].
+    const payload = [_]u8{ 0xa3, 0x63, 'd', 'e', 'c', 0x02, 0x63, 's', 'y', 'm', 0x62, 'A', 'B', 0x64, 'i', 'c', 'o', 'n', 0x82, 0x69 } ++ "image/png".* ++ [_]u8{ 0x43, 1, 2, 3 };
+    // With no inputs (rawTx's one input cut out): its BEEF is itself, no ancestry for the chain state to hold.
+    const with_input = rawTx(a, 0x21, &.{ tokenScript(a, null, 1000, pushOf(a, &payload)), &p2pkh_lock });
+    const mine = cat(a, &.{ with_input[0..4], &.{0}, with_input[5 + 32 + 4 + 1 + 4 ..] });
+    try l.admitted(t, mine, &.{0});
+    // BRC-161 JSON deploys at output 0: one with an http(s) icon, one with an outpoint icon.
+    const web = rawTx(a, 0x22, &.{bsv20(a, "{\"p\":\"bsv-20\",\"op\":\"deploy+mint\",\"amt\":\"5\",\"sym\":\"W\",\"icon\":\"https://example.com/w.png\"}")});
+    try l.admitted(t, web, &.{0});
+    const ord = rawTx(a, 0x23, &.{bsv20(a, "{\"p\":\"bsv-20\",\"op\":\"deploy+mint\",\"amt\":\"5\",\"sym\":\"O\",\"icon\":\"_1\"}")});
+    try l.admitted(t, ord, &.{0});
+    const id_mine = idString(a, w.beef.txidOf(mine), 0);
+    const id_web = idString(a, w.beef.txidOf(web), 0);
+    const id_ord = idString(a, w.beef.txidOf(ord), 0);
+    const id_none = idString(a, [_]u8{0x99} ** 32, 3);
+
+    // The chain state holds the binary deploy, unproven.
+    var ch = try lookup.Chain.load(a, s, null, .regtest);
+    _ = try ch.putTx(w.beef.txidOf(mine), mine);
+    const chain = try ch.save();
+
+    // ?ids=: one row per id, in the query's order, repeats kept; an id not listed {tokenId, listed: false}.
+    const q: Value = .{ .map = &.{.{ .key = "query", .value = text(try std.fmt.allocPrint(a, "ids={s},{s},{s},{s}", .{ id_none, id_web, id_mine, id_ord })) }} };
+    const r = try ls.tokensRoute(a, s, l.state, chain, q);
+    try testing.expectEqual(@as(u64, 200), r.getUint("status").?);
+    try testing.expectEqualStrings("public, max-age=5", r.get("headers").?.getText("cache-control").?);
+    const rows = (try std.json.parseFromSliceLeaky(std.json.Value, a, r.getBytes("body").?, .{})).array.items;
+    try testing.expectEqual(@as(usize, 4), rows.len);
+    try testing.expectEqualStrings(id_none, rows[0].object.get("tokenId").?.string);
+    try testing.expectEqual(false, rows[0].object.get("listed").?.bool);
+    try testing.expectEqual(@as(usize, 2), rows[0].object.count());
+    try testing.expectEqualStrings(id_web, rows[1].object.get("tokenId").?.string);
+    try testing.expectEqualStrings("https://example.com/w.png", rows[1].object.get("iconUrl").?.string);
+    try testing.expect(rows[1].object.get("listed") == null);
+    try testing.expectEqualStrings(id_mine, rows[2].object.get("tokenId").?.string);
+    try testing.expectEqualStrings(try std.fmt.allocPrint(a, "{s}/icon", .{id_mine}), rows[2].object.get("iconUrl").?.string);
+    try testing.expectEqualStrings("AB", rows[2].object.get("sym").?.string);
+    try testing.expectEqualStrings(id_ord, rows[3].object.get("tokenId").?.string);
+    try testing.expect(rows[3].object.get("iconUrl") == null);
+    const bad: Value = .{ .map = &.{.{ .key = "query", .value = text("ids=x") }} };
+    try testing.expectEqual(@as(u64, 400), (try ls.tokensRoute(a, s, l.state, chain, bad)).getUint("status").?);
+
+    // /<token>: the detail, JSON, `state`.
+    const d = try ls.tokenRoute(a, s, l.state, chain, tokenReq(a, id_mine));
+    try testing.expectEqual(@as(u64, 200), d.getUint("status").?);
+    try testing.expectEqualStrings("application/json", d.getText("type").?);
+    try testing.expectEqualStrings("public, max-age=5", d.get("headers").?.getText("cache-control").?);
+    const dj = (try std.json.parseFromSliceLeaky(std.json.Value, a, d.getBytes("body").?, .{})).object;
+    try testing.expectEqualStrings(id_mine, dj.get("tokenId").?.string);
+    try testing.expectEqualStrings(try std.fmt.allocPrint(a, "tm_color_{s}", .{id_mine}), dj.get("topic").?.string);
+    try testing.expectEqual(@as(i64, 2), dj.get("dec").?.integer);
+    try testing.expectEqual(@as(i64, 0), dj.get("vout").?.integer);
+    try testing.expectEqualStrings(try std.fmt.allocPrint(a, "{s}/icon", .{id_mine}), dj.get("iconUrl").?.string);
+    try testing.expect(dj.get("icon") == null);
+
+    // /<token>/icon: the bytes, the deploy's media type; unproven → `state`.
+    const ic = try ls.tokenRoute(a, s, l.state, chain, tokenReq(a, try std.fmt.allocPrint(a, "{s}/icon", .{id_mine})));
+    try testing.expectEqual(@as(u64, 200), ic.getUint("status").?);
+    try testing.expectEqualStrings("image/png", ic.getText("type").?);
+    try testing.expectEqualSlices(u8, &.{ 1, 2, 3 }, ic.getBytes("body").?);
+    try testing.expectEqualStrings("public, max-age=5", ic.get("headers").?.getText("cache-control").?);
+
+    // /<token>/deploy: the deploy's Atomic BEEF from the chain state, octet-stream; unproven → `state`.
+    const dp = try ls.tokenRoute(a, s, l.state, chain, tokenReq(a, try std.fmt.allocPrint(a, "{s}/deploy", .{id_mine})));
+    try testing.expectEqual(@as(u64, 200), dp.getUint("status").?);
+    try testing.expectEqualStrings("application/octet-stream", dp.getText("type").?);
+    try testing.expectEqualStrings("public, max-age=5", dp.get("headers").?.getText("cache-control").?);
+    try testing.expectEqualSlices(u8, (try ch.beefOf(w.beef.txidOf(mine))).?, dp.getBytes("body").?);
+
+    // A BRC-161 JSON deploy: its detail, no /icon (404); its deploy not held by the chain state: 404.
+    const wd = (try std.json.parseFromSliceLeaky(std.json.Value, a, (try ls.tokenRoute(a, s, l.state, chain, tokenReq(a, id_web))).getBytes("body").?, .{})).object;
+    try testing.expectEqualStrings("https://example.com/w.png", wd.get("iconUrl").?.string);
+    for ([_][]const u8{
+        try std.fmt.allocPrint(a, "{s}/icon", .{id_web}),   try std.fmt.allocPrint(a, "{s}/icon", .{id_ord}),
+        try std.fmt.allocPrint(a, "{s}/deploy", .{id_web}), id_none,
+        try std.fmt.allocPrint(a, "{s}/icon", .{id_none}),  try std.fmt.allocPrint(a, "{s}/beef", .{id_mine}),
+        try std.fmt.allocPrint(a, "{s}/", .{id_mine}),      "",
+        "color/tokens",                                     try std.fmt.allocPrint(a, "{s}.0", .{w.header.toHex(w.beef.txidOf(mine))}),
+    }) |rest| {
+        const x = try ls.tokenRoute(a, s, l.state, chain, tokenReq(a, rest));
+        try testing.expectEqual(@as(u64, 404), x.getUint("status").?);
+        try testing.expect(x.get("headers") == null);
+    }
+    // A route not under the row's address: 404.
+    const off: Value = .{ .map = &.{ .{ .key = "route", .value = text(try std.fmt.allocPrint(a, "/other/{s}", .{id_mine})) }, .{ .key = "match", .value = tokenReq(a, "").get("match").? } } };
+    try testing.expectEqual(@as(u64, 404), (try ls.tokenRoute(a, s, l.state, chain, off)).getUint("status").?);
+    // Rejected: gone.
+    try l.rejected(t, mine);
+    try testing.expectEqual(@as(u64, 404), (try ls.tokenRoute(a, s, l.state, chain, tokenReq(a, id_mine))).getUint("status").?);
 }
 
 test "the manifest (shruggr/skein#143): routes, filters and roles; no dispatch, reads or senders" {
@@ -1496,17 +1641,25 @@ test "the manifest (shruggr/skein#143): routes, filters and roles; no dispatch, 
     try testing.expectEqual(@as(usize, 3), gated.len);
     for ([_][]const u8{ "register", "registerLookup", "deregisterLookup" }, gated) |x, g| try testing.expectEqualStrings(x, g.string);
     try testing.expectEqualStrings("color-lookup.tokens", j.get("filters").?.object.get("tokens").?.string);
+    try testing.expectEqualStrings("color-lookup.token", j.get("filters").?.object.get("token").?.string);
     var tokens_read = false;
+    var token_reads = false;
     var register = false;
     for (j.get("routes").?.array.items) |r| {
         try testing.expect(r.object.get("sender") == null and r.object.get("program") == null);
         const addr = r.object.get("address").?.string;
-        if (std.mem.eql(u8, addr, "/color/tokens")) {
-            tokens_read = r.object.get("handler") == null and std.mem.eql(u8, r.object.get("filters").?.array.items[0].string, "tokens");
+        if (std.mem.eql(u8, addr, "/tokens")) {
+            tokens_read = r.object.get("handler") == null and r.object.get("prefix") == null and std.mem.eql(u8, r.object.get("filters").?.array.items[0].string, "tokens");
         }
+        // 0.14.0: one prefix row `/` (the token's reads), a read route; no other prefix row; `/color/tokens` gone.
+        if (r.object.get("prefix")) |px| {
+            try testing.expect(px.bool and std.mem.eql(u8, addr, "/") and !token_reads);
+            token_reads = r.object.get("handler") == null and std.mem.eql(u8, r.object.get("filters").?.array.items[0].string, "token");
+        }
+        try testing.expect(!std.mem.eql(u8, addr, "/color/tokens"));
         if (std.mem.eql(u8, addr, "register")) register = std.mem.eql(u8, r.object.get("handler").?.string, "overlay.register");
     }
-    try testing.expect(tokens_read and register);
+    try testing.expect(tokens_read and token_reads and register);
 }
 
 test "tokens: newest first by the chain — unmined first, then the higher block, then the later position" {

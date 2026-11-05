@@ -218,8 +218,9 @@ decimals, symbol, icon, ...).
 
 Decided (shruggr/skein#120, 2026-10-06): the token list is a read function
 of the 1Color components, not a BRC-24 query. `color-lookup`'s fn
-`tokens`, served by the read route `/<app>/color/tokens` (the manifest's
-`{"transport": "http", "address": "/color/tokens", "filters": ["tokens"]}`,
+`tokens`, served by the read route `/<app>/tokens` (0.14.0, D10: the
+`color/` segment gone; `/<app>/color/tokens` until 0.13.4; the manifest's
+`{"transport": "http", "address": "/tokens", "filters": ["tokens"]}`,
 `filters.tokens = "color-lookup.tokens"`, shruggr/skein#143: the function
 runs as the route's filter over the current state and answers `{answer:
 <the http answer>}`; any method, signed or not, no entry, nothing logged).
@@ -227,14 +228,22 @@ runs as the route's filter over the current state and answers `{answer:
 - **Query**: `{limit?, skip?}`, in the query string
   (`?limit=20&skip=40`) or a JSON body (both: the body's win). `limit` is 1
   to 100 (default 100), `skip` 0 to 100000 (default 0). Any other key, or a
-  value out of range, is a 400 `{status: "error", message}`.
-- **Answer**: 200, a JSON array, one entry per deploy the discovery topic
+  value out of range, is a 400 `{status: "error", message}`. Or `ids`
+  (0.14.0, D17; the query string only): `?ids=<tokenId>,<tokenId>,…`, each
+  exactly `<txid>_<vout>` (lower-case hex, the vout with no leading zero),
+  a comma or `%2C` between them; not beside `limit` / `skip`. Any id out of
+  shape is a 400.
+- **Answer**: 200 (`Cache-Control: public, max-age=5`), a JSON array, one entry per deploy the discovery topic
   `tm_color` admitted (the map `deploys` of the program's index,
   `<app>/ls_color`; nothing when the topic is not registered):
 
   ```
-  [{tokenId, topic, sym, dec, icon?, txid, vout}]
+  [{tokenId, topic, sym, dec, iconUrl?, txid, vout}]
   ```
+
+  With `ids`: one entry per id in the query's order (a repeated id
+  repeated), the token as above when the discovery topic admitted its
+  deploy, else `{tokenId, listed: false}`.
 
   `tokenId` `<txid>_<vout>` (`<txid>_0` at output 0, a binary deploy's or a
   BRC-161 one's alike), `topic` the token's (`tm_color_<txid>_0` or
@@ -247,12 +256,12 @@ runs as the route's filter over the current state and answers `{answer:
   BRC-162 draft bsv-blockchain/BRCs#308; the pointer forms, a 36-byte
   outpoint or a 4-byte output index, are gone, and any other shape is
   absent; a malformed field is absent, as in `@1sat/templates`). `sym` is
-  `""` and `dec` 0 when the deploy carries none; `icon` is left out when it
-  has none. **The icon's shape** (0.9.0, for David's review): a binary
-  (1Color) deploy's is a data URL, `data:<mediaType>;base64,<bytes>`
-  (left out when the media type is not an RFC 6838 `type/subtype`, which a
-  data URL could not carry as written); a BRC-161 JSON deploy's is its
-  `icon` string as written (an outpoint), as before.
+  `""` and `dec` 0 when the deploy carries none. **`iconUrl`** (0.14.0,
+  D8/D10; the data-URL `icon` of 0.9.0 to 0.13.4 is gone): a binary (1Color)
+  deploy's embedded image is `<tokenId>/icon`, RELATIVE to the list's URL
+  (so `/<app>/<tokenId>/icon`, below), left out when its media type is not
+  an RFC 6838 `type/subtype`; a BRC-161 JSON deploy's `icon` string only
+  when it is an http(s) URL (an outpoint, the usual form, is left out).
 - **Order: newest first**, by the chain state (`chain/state`, read only):
   a deploy not yet mined first, then by block height, then by position in
   the block, highest first; ties (unmined) by deploy outpoint, highest
@@ -261,6 +270,23 @@ runs as the route's filter over the current state and answers `{answer:
   store, and the chain state's proofs. A deploy rejected after admission
   has left the index (its `rejected` hook), so it is not listed; one spent
   stays (a registry).
+
+## A token's reads
+
+0.14.0 (D10): one prefix read route, `{"transport": "http", "address":
+"/", "prefix": true, "filters": ["token"]}` with `filters.token =
+"color-lookup.token"`, answers by the route past `/<app>/` (exact routes —
+`/tokens`, the engine's listing and documentation paths, `/submit`,
+`/lookup` — match first; the host answers `/<app>/.live/…` and
+`/<app>/.events` before any route). `<token>` is exactly `<txid>_<vout>`,
+a deploy the discovery topic admitted; any other path under the row is a
+404 `{status: "error", message}`. Any method, signed or not, nothing logged.
+
+| path | answer | `Cache-Control` |
+|---|---|---|
+| `/<app>/<token>` | `{tokenId, topic, sym, dec, txid, vout, iconUrl?}` (as a list row) | `public, max-age=5` |
+| `/<app>/<token>/icon` | the embedded icon's bytes, `Content-Type` its media type; 404 for a deploy without one (a BRC-161 JSON deploy always) | `public, max-age=31536000, immutable` when the deploy is proven in `chain/state` (a proof whose block is on its chain), else `public, max-age=5` |
+| `/<app>/<token>/deploy` | the deploy's Atomic BEEF from `chain/state` (`beefOf`), `application/octet-stream`; 404 when the chain state does not hold it | as `/icon` |
 
 ## Registering a token
 
@@ -351,8 +377,10 @@ not remove what the topic admitted or the lookup's index of it.
   documentation paths, `/listTopicManagers`,
   `/listLookupServiceProviders`, `/getDocumentationForTopicManager`,
   `/getDocumentationForLookupServiceProvider` (each with its filter, the
-  engine's function, declared in `filters`), and the token list
-  `/color/tokens` (the filter `tokens`, `color-lookup.tokens`).
+  engine's function, declared in `filters`), the token list
+  `/tokens` (the filter `tokens`, `color-lookup.tokens`; 0.14.0, was
+  `/color/tokens`) and the token's reads, the prefix row `/` (the filter
+  `token`, `color-lookup.token`; 0.14.0).
   `/lookup` (a read route, the filter `lookup`) and `/submit` (`kernel.beef`
   → `overlay.submit`) and the box `<app>` (event and mailbox routes) are
   derived by the install from `config.overlay`;

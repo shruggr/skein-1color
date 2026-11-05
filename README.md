@@ -4,15 +4,15 @@ The 1Color token (BRC-162; BRC-207) overlay components for a
 [skein](https://github.com/shruggr/skein): a topic manager and a lookup
 service, as programs an overlay app carries in its tree, and the token
 library they are built on, as a Zig package, and two pages an app that
-carries the components serves. Version **0.13.4**.
+carries the components serves. Version **0.14.0**.
 
 0.10.0 is the 1Color rename, on BRC-207's wire names
 (David Case, 2026-10-15, shruggr/skein#120): the repo `skein-1color`, the
 app `1color`, the Zig module `1color`, the programs `color-topic` and
 `color-lookup`, the topics `tm_color` and `tm_color_<assetId>`, the lookups
 `ls_color` and `ls_color_<assetId>` (0.12.0: `ls_color_deploys` gone), the queries
-`color-spendability` and `color-admission`, the read `/color/tokens` and
-the pages under `/<app>/color/`. No aliases: the old names stop working
+`color-spendability` and `color-admission`, the read `/color/tokens`
+(0.14.0: `/tokens`) and the pages under `/<app>/color/`. No aliases: the old names stop working
 everywhere (CHANGELOG.md).
 
 ## What it is
@@ -45,11 +45,25 @@ everywhere (CHANGELOG.md).
   `<txid>.<vout>`) answers the deploy output, spent or not;
   `color-spendability` while unspent. `ls_color_deploys` is gone, no alias.
 - **The token list** (0.7.0; a read, not a BRC-24 query): `color-lookup`'s
-  fn `tokens` at `/<app>/color/tokens`, `{limit?, skip?}` →
-  `[{tokenId, topic, sym, dec, icon?, txid, vout}]`, every deploy
-  `tm_color` admitted, newest first (docs/1COLOR.md "The token list");
-  `icon` a 1Color deploy's embedded image as a data URL (0.9.0), a BRC-161
-  JSON deploy's icon string as written.
+  fn `tokens` at `/<app>/tokens` (0.14.0; `/<app>/color/tokens` before),
+  `{limit?, skip?}` → `[{tokenId, topic, sym, dec, iconUrl?, txid, vout}]`,
+  every deploy `tm_color` admitted, newest first; or `?ids=a,b` → one row
+  per id in the query's order, `{tokenId, listed: false}` for one not
+  listed (docs/1COLOR.md "The token list"). `iconUrl` (0.14.0, replacing
+  the data-URL `icon`) is relative to the list, `<tokenId>/icon`, for a
+  1Color deploy's embedded image; a BRC-161 JSON deploy's icon string only
+  when it is an http(s) URL.
+- **A token's reads** (0.14.0; docs/1COLOR.md "A token's reads"): one
+  prefix row `/<app>/`, `color-lookup`'s fn `token`:
+
+  | route | answer |
+  |---|---|
+  | `GET /<app>/tokens?limit=&skip=` / `?ids=a,b` | the token list (JSON), `Cache-Control: public, max-age=5` |
+  | `GET /<app>/<txid>_<vout>` | `{tokenId, topic, sym, dec, txid, vout, iconUrl?}`, `public, max-age=5` |
+  | `GET /<app>/<txid>_<vout>/icon` | the embedded icon (its media type); `public, max-age=31536000, immutable` when the deploy is proven, else `public, max-age=5`; 404 without one |
+  | `GET /<app>/<txid>_<vout>/deploy` | the deploy's Atomic BEEF, `application/octet-stream`; the same cache rule |
+
+  Anything else under `/<app>/` that no exact route takes is a 404.
 - **The embedded icon** (0.9.0; BRC-162 draft bsv-blockchain/BRCs#308): a
   deploy's `icon` is the DAG-CBOR array `[mediaType, bytes]`; the pointer
   forms (an outpoint, an output index) are gone, and any other shape is
@@ -209,8 +223,12 @@ skein routes add --transport http --filters 1color.lookup /lookup <origin>
 **List the tokens** (a read: any method, signed or not):
 
 ```
-GET <base>/color/tokens?limit=20&skip=0
-→ [{"tokenId": "<txid>_0", "topic": "tm_color_<txid>_0", "sym": "GOLD", "dec": 8, "icon": "data:image/png;base64,…", "txid": "<txid>", "vout": 0}, …]
+GET <base>/tokens?limit=20&skip=0
+→ [{"tokenId": "<txid>_0", "topic": "tm_color_<txid>_0", "sym": "GOLD", "dec": 8, "iconUrl": "<txid>_0/icon", "txid": "<txid>", "vout": 0}, …]
+GET <base>/tokens?ids=<txid>_0,<other>_0
+→ [{"tokenId": "<txid>_0", …}, {"tokenId": "<other>_0", "listed": false}]
+GET <base>/<txid>_0/icon     → the image bytes (Content-Type its media type)
+GET <base>/<txid>_0/deploy   → the deploy's Atomic BEEF
 ```
 
 Each answer is an output-list: `{type: "output-list", outputs: [{beef,
@@ -283,10 +301,14 @@ AMM) carries these in its tree and manifest:
      "/listTopicManagers", "filters": ["listTopicManagers"]}`, … with
      `filters: {"listTopicManagers": "overlay.listTopicManagers",
      "listLookupServiceProviders": …, "topicDocumentation": …,
-     "lookupDocumentation": …}`) and the token list `{"transport": "http",
-     "address": "/color/tokens", "filters": ["tokens"]}` with `filters.tokens
-     = "color-lookup.tokens"`. Called as a filter, `color-lookup`'s
-     `tokens` answers `{answer: <the http answer>}` (0.8.0).
+     "lookupDocumentation": …}`), the token list `{"transport": "http",
+     "address": "/tokens", "filters": ["tokens"]}` with `filters.tokens
+     = "color-lookup.tokens"` (0.14.0; `/color/tokens` before), and the
+     token's reads `{"transport": "http", "address": "/", "prefix": true,
+     "filters": ["token"]}` with `filters.token = "color-lookup.token"`
+     (0.14.0). Called as a filter,
+     `color-lookup`'s `tokens` / `token` answer `{answer: <the http
+     answer>}` (0.8.0).
    - **The sync row** (0.11.0, skein-overlay 0.15.0, shruggr/skein#154):
      `{"transport": "libp2p", "address": "/skein/overlay/sync/1.0.0",
      "filters": ["sync"]}` with `filters.sync = "overlay.sync"`, no
@@ -365,7 +387,7 @@ token (`<txid>_0` included; 0.8.1), and a token's topic and lookup, `tm_color_<a
 | page | served at | what |
 |---|---|---|
 | deploy | `/<app>/color/deploy/` | **Deploy a token.** Open to anyone: a helper over the user's own wallet. Fields: symbol, decimals (0 to 18), fixed supply (an amount in whole tokens) or authority (amount 0, the deploy output mints), an optional icon: an image file, embedded in the deploy (0.9.0; BRC-162 draft BRCs#308: the action takes `{mediaType, bytes}`), previewed, its media type `image/…`. `@1sat/actions`' `deploy1Color` (0.10.1; `deployMandala` before) builds the BRC-162 deploy at output 0 and hands it to the wallet's BRC-207 `color` module (the wallet connected through `@1sat/connect`), which signs and broadcasts it, files it in its own basket (`p color <txid>v0`, or `p color <txid>v0 authority` for an authority deploy: BRC-207's asset tag, `assetBasket` of `@bsv/color-permission-module`) and submits it to `tm_color` and the token's topic at the wallet's configured overlay. A result with an error (a refused permission, say) shows as an error; nothing is shown as deployed. Then the page submits the deploy (the AtomicBEEF the action returns) to the overlay it is served from: `POST <origin>/submit` at the host root (0.13.4; `<base>/<app>/submit` before), the BEEF as the body, `X-Topics: tm_color` only (the token's own topic `tm_color_<txid>_0` did not exist here before this transaction, so nobody serves it yet; a repeat of the wallet's own submit is harmless). The page POSTs itself, unsigned, by plain `fetch` (0.7.5; David, 2026-10-08: "We shouldn't be using authfetch for the submit http method"): the skein admits an unsigned POST at a route whose filter validates the payload (shruggr/skein#135, #143), and the `/submit` route's filter is `kernel.beef`. (0.6.1 to 0.7.4 signed it through the wallet's AuthFetch, which refuses the `X-Topics` header.) The answer is BRC-22's STEAK (skein-overlay 0.9.1; 0.7.2 here): the page shows the topics that admitted outputs, or "taken by no topic", or, on a 503 + `Retry-After`, "not decided yet" (the submission stands; Submit again polls it); the discovery topic has the deploy once admitted (lookup `ls_color`: BRC-207 `color-admission` with `topic: "tm_color"`; 0.12.1). An overlay that does not serve `tm_color` takes the submit and admits nothing. The page shows the token id, `<txid>_0` (0.8.1; every token is `<txid>_<vout>`), and the topic and lookup to register, `tm_color_<txid>_0` and `ls_color_<txid>_0`; root copies the topic to the tokens page to register both. If the submit fails, "Submit again". (Until 0.10.0 the SDK filed the deploy in a second step, and "File it again" reran it; the module files it in the same `createAction`.) |
-| tokens | `/<app>/color/tokens/` | **Tokens on this overlay.** Root's page (the key that claimed the instance, or one root granted; shruggr/skein#143). Lists the registered topics judged by `color-topic` (the overlay engine's head `<app>/topics`, `{kind: "overlay-topics", topics: [{topic, program}]}`, read through the instance's explorer, `/explore/head/<app>/topics`, which is root's read), each with its icon and symbol from its deploy (0.9.0: the read `/<app>/color/tokens`, a 1Color deploy's embedded image as a data URL) and whether its lookup `ls_color_<assetId>` is registered (the head `<app>/lookups`). Register a token by its topic name (`tm_color_<txid>_<vout>`, `tm_color_<txid>_0` at output 0): two messages, its topic then its lookup (0.9.0, BRC-207); deregister a listed token (its lookup, then its topic); and a switch that registers or deregisters the discovery topic `tm_color`. Each change is root's message to the app's box `<app>/register`, the engine's `{fn: "register", args: {topic, program: "color-topic", seed?}}`, `{fn: "registerLookup", args: {service, program: "color-lookup", topics}}`, `{fn: "deregisterLookup", args: {service}}` or `{fn: "deregister", args: {topic}}` (each answered before the next; a refusal stops the rest), sent the way skein-site sends root's messages (skein's `RawBox.send`: a BRC-104-signed `POST <base>/sendMessage`, BRC-231 CBOR, recipient the instance's identity from its signed answers). The outcome is the step's result record (`{kind: "overlay-result", op, topic, active, changed}` or `{op, error}`), whose CID the step prints on stdout, read from the thread the message launched; then the set is read again. A wallet that does not hold root gets the explorer's 403, and its messages run nothing (the route `register` is gated by root: recorded, no step). **The token's own deploy** (0.6.2, skein-overlay 0.7.8): a register of `tm_color_<txid>_<vout>` carries `seed: [<txid>]`, the deploy; the engine judges the deploy under the new topic from what the instance's chain state already holds, and the answer says `seeded` or `missing` (`untaken`: held, but the topic took nothing of it). The page shows which. Seeded, nothing more is sent. Missing (the overlay never held the deploy: a token deployed elsewhere, or before discovery), the connected wallet's copy: `listOutputs` on the token's basket as the wallet's `color` module files it, `p color <txid>v<vout>`, then `p color <txid>v<vout> authority` (0.10.1; `mandala <txid> <vout>` before), with `include: "entire transactions"` (the wallet that deployed it holds it there until the deploy output is spent), submitted under both `tm_color` and `tm_color_<txid>_<vout>`. Before 0.6.2 the page looked the deploy up (the discovery lookup) and resubmitted it after the register; the seed replaces that. Each registered token has "Submit deploy to this overlay", on demand: the deploy's BEEF from the discovery lookup (`POST <origin>/lookup` at the host root, 0.13.4, `<base>/<app>/lookup` before; `{service: "ls_color", query: {type: color-admission, version: 1, assetId: <txid>_<vout>, topic: tm_color, outpoints: [<txid>.<vout>]}}`, BRC-207's `color-admission`, the token id `<txid>_<vout>` from the topic; 0.12.1, `ls_color_deploys {tokenId}` until 0.11.x), submitted with `X-Topics: tm_color_<txid>_<vout>`, else the wallet's copy as above. The lookup is a POST through the instance's BRC-104 client, as the reads do (0.6.1); the submit is a plain `fetch`, unsigned, as on the deploy page (0.7.5). The page shows the answer (the STEAK in words, or not decided yet; 0.7.2) and where the BEEF came from. **Market and validator** (0.9.1, skein-overlay 0.12.0; David 2026-10-09: every skein is a market and a validator from install, always): no switch; the page says that registering a token starts both for it and deregistering stops them (0.7.3 to 0.9.0 had the two switches, `{fn: "market" | "validator", …}`). |
+| tokens | `/<app>/color/tokens/` | **Tokens on this overlay.** Root's page (the key that claimed the instance, or one root granted; shruggr/skein#143). Lists the registered topics judged by `color-topic` (the overlay engine's head `<app>/topics`, `{kind: "overlay-topics", topics: [{topic, program}]}`, read through the instance's explorer, `/explore/head/<app>/topics`, which is root's read), each with its icon and symbol from its deploy (0.14.0: the read `/<app>/tokens`, the icon by its `iconUrl`; 0.9.0 to 0.13.4 `/<app>/color/tokens` and a data URL) and whether its lookup `ls_color_<assetId>` is registered (the head `<app>/lookups`). Register a token by its topic name (`tm_color_<txid>_<vout>`, `tm_color_<txid>_0` at output 0): two messages, its topic then its lookup (0.9.0, BRC-207); deregister a listed token (its lookup, then its topic); and a switch that registers or deregisters the discovery topic `tm_color`. Each change is root's message to the app's box `<app>/register`, the engine's `{fn: "register", args: {topic, program: "color-topic", seed?}}`, `{fn: "registerLookup", args: {service, program: "color-lookup", topics}}`, `{fn: "deregisterLookup", args: {service}}` or `{fn: "deregister", args: {topic}}` (each answered before the next; a refusal stops the rest), sent the way skein-site sends root's messages (skein's `RawBox.send`: a BRC-104-signed `POST <base>/sendMessage`, BRC-231 CBOR, recipient the instance's identity from its signed answers). The outcome is the step's result record (`{kind: "overlay-result", op, topic, active, changed}` or `{op, error}`), whose CID the step prints on stdout, read from the thread the message launched; then the set is read again. A wallet that does not hold root gets the explorer's 403, and its messages run nothing (the route `register` is gated by root: recorded, no step). **The token's own deploy** (0.6.2, skein-overlay 0.7.8): a register of `tm_color_<txid>_<vout>` carries `seed: [<txid>]`, the deploy; the engine judges the deploy under the new topic from what the instance's chain state already holds, and the answer says `seeded` or `missing` (`untaken`: held, but the topic took nothing of it). The page shows which. Seeded, nothing more is sent. Missing (the overlay never held the deploy: a token deployed elsewhere, or before discovery), the connected wallet's copy: `listOutputs` on the token's basket as the wallet's `color` module files it, `p color <txid>v<vout>`, then `p color <txid>v<vout> authority` (0.10.1; `mandala <txid> <vout>` before), with `include: "entire transactions"` (the wallet that deployed it holds it there until the deploy output is spent), submitted under both `tm_color` and `tm_color_<txid>_<vout>`. Before 0.6.2 the page looked the deploy up (the discovery lookup) and resubmitted it after the register; the seed replaces that. Each registered token has "Submit deploy to this overlay", on demand: the deploy's BEEF from the discovery lookup (`POST <origin>/lookup` at the host root, 0.13.4, `<base>/<app>/lookup` before; `{service: "ls_color", query: {type: color-admission, version: 1, assetId: <txid>_<vout>, topic: tm_color, outpoints: [<txid>.<vout>]}}`, BRC-207's `color-admission`, the token id `<txid>_<vout>` from the topic; 0.12.1, `ls_color_deploys {tokenId}` until 0.11.x), submitted with `X-Topics: tm_color_<txid>_<vout>`, else the wallet's copy as above. The lookup is a POST through the instance's BRC-104 client, as the reads do (0.6.1); the submit is a plain `fetch`, unsigned, as on the deploy page (0.7.5). The page shows the answer (the STEAK in words, or not decided yet; 0.7.2) and where the BEEF came from. **Market and validator** (0.9.1, skein-overlay 0.12.0; David 2026-10-09: every skein is a market and a validator from install, always): no switch; the page says that registering a token starts both for it and deregistering stops them (0.7.3 to 0.9.0 had the two switches, `{fn: "market" | "validator", …}`). |
 
 The page takes the app's name and the instance from its own URL:
 `<base>/<app>/color/<page>/`, where `<base>` is the instance's origin or a
@@ -377,10 +399,9 @@ host's `/@<handle>` dev form. So the same files work under any app name.
 `/<app>/` (skein-static's README has the rows). Asset paths are relative, so
 `/<app>/color/deploy` (redirected to `…/deploy/`) loads them from
 `/<app>/color/assets/`. Nothing is built on the skein: `www/` is committed
-as built. The token list read is `/<app>/color/tokens` without the slash
-(0.7.0): an exact read takes that path, so the tokens page is reached at
-`/<app>/color/tokens/` only (the slash-less path answers the JSON list,
-not the redirect to the page).
+as built. The token list read is `/<app>/tokens` (0.14.0); 0.7.0 to
+0.13.4 it was `/<app>/color/tokens` without the slash, which kept the
+tokens page reachable at `/<app>/color/tokens/` only.
 
 **The wallet's grouped request.** A wallet reads `manifest.json` at the
 origin's root, so these pages ship none. The deploy goes through the

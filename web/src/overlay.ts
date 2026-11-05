@@ -16,10 +16,11 @@
  *   resubmission polls it).
  * - `POST <host root>/lookup {service, query}` →
  *   `{type: "output-list", outputs: [{beef, outputIndex}]}`.
- * - `GET <app base>/color/tokens?limit&skip` (a read, plain fetch): the
- *   deploys `tm_color` admitted, `[{tokenId, topic, sym, dec, icon?, txid,
- *   vout}]`, `icon` a 1Color deploy's embedded image as a data URL (a BRC-161
- *   JSON deploy's icon string as written).
+ * - `GET <app base>/tokens?limit&skip` (a read, plain fetch; 0.14.0, was
+ *   `/color/tokens`): the deploys `tm_color` admitted, `[{tokenId, topic, sym,
+ *   dec, iconUrl?, txid, vout}]`, `iconUrl` relative to the list (`<token>/icon`,
+ *   a 1Color deploy's embedded image) or a BRC-161 JSON deploy's http(s) icon;
+ *   `listTokens` resolves it against the list's URL.
  *
  * `<host root>` is the origin of the page's `base` (src/where.ts), any `/@<handle>`
  * prefix dropped: the skein host routes `/submit` by `X-Topics` and `/lookup`
@@ -179,14 +180,14 @@ export async function submitWalletDeploy(root: string, topic: string, wallet: Wa
   return { answer: await submitBeef(root, beef, topics, submitF), via: "wallet", topics };
 }
 
-/** One deploy on the token list (`/<app>/color/tokens`). */
+/** One deploy on the token list (`/<app>/tokens`). */
 export interface Listed {
   tokenId: string;
   topic: string;
   sym: string;
   dec: number;
-  /** A 1Color deploy's embedded image, `data:<mediaType>;base64,…`; a BRC-161 JSON deploy's icon string as written. */
-  icon?: string;
+  /** The icon's URL (a 1Color deploy's embedded image, or a BRC-161 JSON deploy's http(s) icon), resolved against the list's URL by `listTokens`. */
+  iconUrl?: string;
   txid: string;
   vout: number;
 }
@@ -195,12 +196,13 @@ export interface Listed {
 export async function listTokens(appBase: string, f: Fetch = plainFetch, pages = 10): Promise<Listed[]> {
   const out: Listed[] = [];
   for (let i = 0; i < pages; i++) {
-    const r = await f(`${appBase}/color/tokens?limit=100&skip=${i * 100}`, { method: "GET" });
+    const url = `${appBase}/tokens?limit=100&skip=${i * 100}`;
+    const r = await f(url, { method: "GET" });
     const text = await r.text();
-    if (r.status !== 200) throw new Error(`color/tokens: HTTP ${r.status} ${text.slice(0, 200)}`);
+    if (r.status !== 200) throw new Error(`tokens: HTTP ${r.status} ${text.slice(0, 200)}`);
     const page = JSON.parse(text) as Listed[];
-    if (!Array.isArray(page)) throw new Error(`color/tokens: not a list: ${text.slice(0, 200)}`);
-    out.push(...page);
+    if (!Array.isArray(page)) throw new Error(`tokens: not a list: ${text.slice(0, 200)}`);
+    out.push(...page.map((t) => (t.iconUrl ? { ...t, iconUrl: new URL(t.iconUrl, url).href } : t)));
     if (page.length < 100) break;
   }
   return out;

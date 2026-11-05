@@ -159,10 +159,10 @@ describe("a token topic's own deploy", () => {
   });
 });
 
-describe("the token list (/<app>/color/tokens, a read)", () => {
-  it("every page, by plain GET, until a short one; a 1Color deploy's icon a data URL", async () => {
+describe("the token list (/<app>/tokens, a read)", () => {
+  it("every page, by plain GET, until a short one; iconUrl resolved against the list's URL", async () => {
     const urls: string[] = [];
-    const row = (i: number) => ({ tokenId: `${txid}_${i}`, topic: `tm_color_${txid}_${i}`, sym: "T", dec: 0, txid, vout: i, ...(i === 0 && { icon: "data:image/png;base64,AQID" }) });
+    const row = (i: number) => ({ tokenId: `${txid}_${i}`, topic: `tm_color_${txid}_${i}`, sym: "T", dec: 0, txid, vout: i, ...(i === 0 && { iconUrl: `${txid}_0/icon` }), ...(i === 1 && { iconUrl: "https://example.com/i.png" }) });
     const f: Fetch = async (u, init) => {
       urls.push(`${init?.method} ${u}`);
       const skip = Number(new URL(u).searchParams.get("skip"));
@@ -170,8 +170,10 @@ describe("the token list (/<app>/color/tokens, a read)", () => {
     };
     const list = await listTokens(base, f);
     expect(list).toHaveLength(101);
-    expect(list[0]!.icon).toBe("data:image/png;base64,AQID");
-    expect(urls).toEqual([`GET ${base}/color/tokens?limit=100&skip=0`, `GET ${base}/color/tokens?limit=100&skip=100`]);
+    expect(list[0]!.iconUrl).toBe(`${base}/${txid}_0/icon`);
+    expect(list[1]!.iconUrl).toBe("https://example.com/i.png");
+    expect(list[2]!.iconUrl).toBeUndefined();
+    expect(urls).toEqual([`GET ${base}/tokens?limit=100&skip=0`, `GET ${base}/tokens?limit=100&skip=100`]);
     await expect(listTokens(base, async () => new Response("no", { status: 404 }))).rejects.toThrow(/HTTP 404/);
   });
 });

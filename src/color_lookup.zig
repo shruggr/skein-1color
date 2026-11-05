@@ -458,10 +458,12 @@ pub fn documentation(_: Allocator, service: []const u8) anyerror![]const u8 {
     ;
 }
 
-// ---------------------------------------------------------------- the token list (fn "tokens", a read)
+// ---------------------------------------------------------------- the token reads (fns "tokens" and "token", reads)
 
-/// The token list's query: `{limit?, skip?}`, from the query string or a JSON body (both: the body's win).
-pub const TokensQuery = struct { limit: u64 = max_limit, skip: u64 = 0 };
+/// The token list's query: `{limit?, skip?}` from the query string or a JSON body (both: the body's
+/// win), or `ids` (the query string only, comma-separated token ids `<txid>_<vout>`; 0.14.0), which
+/// takes neither `limit` nor `skip`.
+pub const TokensQuery = struct { limit: u64 = max_limit, skip: u64 = 0, ids: ?[]const []const u8 = null, paged: bool = false };
 
 fn tokensField(q: *TokensQuery, key: []const u8, v: u64) !void {
     if (eql(u8, key, "limit")) {
@@ -471,44 +473,114 @@ fn tokensField(q: *TokensQuery, key: []const u8, v: u64) !void {
         if (v > max_skip) return error.BadQuery;
         q.skip = v;
     } else return error.BadQuery;
+    q.paged = true;
 }
 
-/// The token list's query from a request: the query string's `limit` / `skip` (decimal), then a JSON
-/// object body's (integers). Any other key, or a value out of range, is refused (error.BadQuery).
+/// A query string value percent-decoded (`%2C` is a comma as `URLSearchParams` writes it); a bad
+/// escape is error.BadQuery.
+fn percentDecoded(a: Allocator, v: []const u8) ![]const u8 {
+    if (std.mem.indexOfScalar(u8, v, '%') == null) return v;
+    var out: std.ArrayList(u8) = .empty;
+    var i: usize = 0;
+    while (i < v.len) : (i += 1) {
+        if (v[i] != '%') {
+            try out.append(a, v[i]);
+            continue;
+        }
+        if (i + 2 >= v.len) return error.BadQuery;
+        try out.append(a, std.fmt.parseInt(u8, v[i + 1 .. i + 3], 16) catch return error.BadQuery);
+        i += 2;
+    }
+    return out.items;
+}
+
+/// The token list's query from a request: the query string's `limit` / `skip` (decimal) or `ids`,
+/// then a JSON object body's `limit` / `skip` (integers). Any other key, a value out of range, an id
+/// not exactly `<txid>_<vout>`, or `ids` beside `limit` / `skip`, is refused (error.BadQuery).
 pub fn parseTokensQuery(a: Allocator, query: []const u8, body: []const u8) !TokensQuery {
     var q: TokensQuery = .{};
     var it = std.mem.splitScalar(u8, if (std.mem.startsWith(u8, query, "?")) query[1..] else query, '&');
     while (it.next()) |kv| {
         if (kv.len == 0) continue;
         const i = std.mem.indexOfScalar(u8, kv, '=') orelse return error.BadQuery;
+        if (eql(u8, kv[0..i], "ids")) {
+            if (q.ids != null) return error.BadQuery;
+            var ids: std.ArrayList([]const u8) = .empty;
+            var parts = std.mem.splitScalar(u8, try percentDecoded(a, kv[i + 1 ..]), ',');
+            while (parts.next()) |p| {
+                if (tokenKeyOf(p) == null) return error.BadQuery;
+                try ids.append(a, p);
+            }
+            q.ids = ids.items;
+            continue;
+        }
         const v = std.fmt.parseInt(u64, kv[i + 1 ..], 10) catch return error.BadQuery;
         try tokensField(&q, kv[0..i], v);
     }
-    if (std.mem.trim(u8, body, " \t\r\n").len == 0) return q;
-    const j = std.json.parseFromSliceLeaky(std.json.Value, a, body, .{}) catch return error.BadQuery;
-    if (j != .object) return error.BadQuery;
-    var jt = j.object.iterator();
-    while (jt.next()) |e| {
-        const v = e.value_ptr.*;
-        if (v != .integer or v.integer < 0) return error.BadQuery;
-        try tokensField(&q, e.key_ptr.*, @intCast(v.integer));
+    if (std.mem.trim(u8, body, " \t\r\n").len != 0) {
+        const j = std.json.parseFromSliceLeaky(std.json.Value, a, body, .{}) catch return error.BadQuery;
+        if (j != .object) return error.BadQuery;
+        var jt = j.object.iterator();
+        while (jt.next()) |e| {
+            const v = e.value_ptr.*;
+            if (v != .integer or v.integer < 0) return error.BadQuery;
+            try tokensField(&q, e.key_ptr.*, @intCast(v.integer));
+        }
     }
+    if (q.ids != null and q.paged) return error.BadQuery;
     return q;
 }
 
+/// A token id exactly as the list writes it, `<txid>_<vout>` (the txid 64 lower-case hex in display
+/// order, the vout decimal with no leading zero, `_0` included), as the discovery index's key; null
+/// for any other text.
+pub fn tokenKeyOf(t: []const u8) ?[36]u8 {
+    if (t.len < 66 or t[64] != '_') return null;
+    for (t[0..64]) |ch| if (!(std.ascii.isDigit(ch) or (ch >= 'a' and ch <= 'f'))) return null;
+    const v = t[65..];
+    if (v.len > 1 and v[0] == '0') return null;
+    for (v) |ch| if (!std.ascii.isDigit(ch)) return null;
+    const vout = std.fmt.parseInt(u32, v, 10) catch return null;
+    var key: [36]u8 = undefined;
+    _ = std.fmt.hexToBytes(key[0..32], t[0..64]) catch return null;
+    key[32..36].* = c.store.be32(vout);
+    return key;
+}
+
 /// One token on the list: its id `<txid>_<vout>` (`_0` included), its topic `tm_color_<id>`, the
-/// deploy's display fields (`sym` "" and `dec` 0 when the deploy carries none), its icon — a binary
-/// (BRC-162) deploy's embedded image as a data URL `data:<mediaType>;base64,…` (absent when its
-/// media type is not an RFC 6838 `type/subtype`), a BRC-161 JSON deploy's `icon` string as written —
-/// and the deploy outpoint.
+/// deploy's display fields (`sym` "" and `dec` 0 when the deploy carries none), `iconUrl` — a binary
+/// (BRC-162) deploy's embedded image as `<tokenId>/icon`, relative to the list (absent when its media
+/// type is not an RFC 6838 `type/subtype`); a BRC-161 JSON deploy's `icon` string only when it is an
+/// http(s) URL — and the deploy outpoint.
 pub const Listed = struct {
     tokenId: []const u8,
     topic: []const u8,
     sym: []const u8,
     dec: u8,
-    icon: ?[]const u8 = null,
+    iconUrl: ?[]const u8 = null,
     txid: []const u8,
     vout: u32,
+};
+
+/// A row of the `ids` form: the token as listed, or `{tokenId, listed: false}` for an id discovery
+/// does not list.
+pub const Row = union(enum) {
+    listed: Listed,
+    unknown: []const u8,
+
+    pub fn jsonStringify(self: Row, jw: anytype) !void {
+        switch (self) {
+            .listed => |l| try jw.write(l),
+            .unknown => |id| {
+                try jw.beginObject();
+                try jw.objectField("tokenId");
+                try jw.write(id);
+                try jw.objectField("listed");
+                try jw.write(false);
+                try jw.endObject();
+            },
+        }
+    }
 };
 
 /// Where a deploy stands for "newest first": its block height and position in the block from the
@@ -535,9 +607,13 @@ fn hexOf(a: Allocator, internal: [32]u8) ![]const u8 {
     return a.dupe(u8, &std.fmt.bytesToHex(display(internal), .lower));
 }
 
+/// A deploy as the reads serve it: its list row and, for a binary deploy, its embedded icon when
+/// its media type is an RFC 6838 `type/subtype`.
+pub const Deploy = struct { listed: Listed, icon: ?color.brc162.Icon = null };
+
 /// A deploy the discovery index holds (its key: txid display ‖ vout BE), read from its transaction:
 /// null when the store does not hold it or the output is no deploy.
-fn listedOf(a: Allocator, s: c.store.Store, key: []const u8) !?Listed {
+fn deployOf(a: Allocator, s: c.store.Store, key: []const u8) !?Deploy {
     const op = opOf(key);
     const raw = s.tryGet(a, &c.store.hashCid(.tx, op.txid)) orelse return null;
     const tx = c.bsvz.transaction.Transaction.parse(a, raw) catch return null;
@@ -548,40 +624,43 @@ fn listedOf(a: Allocator, s: c.store.Store, key: []const u8) !?Listed {
     const nid: color.name.TokenId = .{ .txid = id.txid, .vout = id.vout, .kind = if (op.vout == 0) .native else .legacy };
     var tb: [color.name.max_suffix_len]u8 = undefined;
     var nb: [color.name.max_topic_len]u8 = undefined;
-    var out: Listed = .{
+    var out: Deploy = .{ .listed = .{
         .tokenId = try a.dupe(u8, color.name.tokenIdText(&tb, nid)),
         .topic = try a.dupe(u8, color.name.topicName(&nb, nid)),
         .sym = "",
         .dec = 0,
         .txid = try hexOf(a, op.txid),
         .vout = op.vout,
-    };
+    } };
     switch (t.form) {
         .binary => {
             const m = color.brc162.metadataOf(t.binary.?.payload orelse "");
-            out.sym = m.sym orelse "";
-            out.dec = m.dec orelse 0;
-            if (m.icon) |ic| out.icon = try dataUrlOf(a, ic);
+            out.listed.sym = m.sym orelse "";
+            out.listed.dec = m.dec orelse 0;
+            if (m.icon) |ic| if (isMediaType(ic.media_type)) {
+                out.icon = ic;
+                out.listed.iconUrl = try std.fmt.allocPrint(a, "{s}/icon", .{out.listed.tokenId});
+            };
         },
         .json => {
             const j = t.json.?;
-            out.sym = j.sym orelse "";
-            out.dec = j.dec orelse 0;
-            out.icon = j.icon;
+            out.listed.sym = j.sym orelse "";
+            out.listed.dec = j.dec orelse 0;
+            if (j.icon) |ic| if (isHttpUrl(ic)) {
+                out.listed.iconUrl = ic;
+            };
         },
     }
     return out;
 }
 
-/// An embedded icon as a data URL, `data:<mediaType>;base64,<bytes>`; null when the media type is not
-/// an RFC 6838 `type/subtype` (restricted-name characters), which a data URL could not carry as is.
-pub fn dataUrlOf(a: Allocator, ic: color.brc162.Icon) !?[]const u8 {
-    if (!isMediaType(ic.media_type)) return null;
-    const enc = std.base64.standard.Encoder;
-    const out = try a.alloc(u8, "data:".len + ic.media_type.len + ";base64,".len + enc.calcSize(ic.bytes.len));
-    const head = try std.fmt.bufPrint(out, "data:{s};base64,", .{ic.media_type});
-    _ = enc.encode(out[head.len..], ic.bytes);
-    return out;
+fn listedOf(a: Allocator, s: c.store.Store, key: []const u8) !?Listed {
+    return if (try deployOf(a, s, key)) |d| d.listed else null;
+}
+
+/// Whether a BRC-161 icon string is an http(s) URL (the scheme in any case).
+pub fn isHttpUrl(t: []const u8) bool {
+    return std.ascii.startsWithIgnoreCase(t, "http://") or std.ascii.startsWithIgnoreCase(t, "https://");
 }
 
 /// RFC 6838 §4.2: `type "/" subtype`, each a restricted-name (1 to 127 characters: a letter or
@@ -601,7 +680,7 @@ fn restrictedName(n: []const u8) bool {
 /// components, not a BRC-24 query): every deploy the discovery topic `tm_color` admitted (the
 /// map `deploys` of the program's index, its state record `deploys_state`), newest first by the
 /// chain state (`chain_state`; unmined first, then by block height and position, highest first),
-/// `skip` then `limit` of them. Reads only.
+/// `skip` then `limit` of them. Reads only. (The `ids` form is `byIds`.)
 pub fn tokens(a: Allocator, s: c.store.Store, deploys_state: ?[]const u8, chain_state: ?[]const u8, q: TokensQuery) ![]const Listed {
     var svc = try Service.loadIndex(a, s, service_name, index_name, spec.maps, deploys_state);
     // The chain app's state through the SDK's one opener (shruggr/skein-sdk#1): its record's network, else main.
@@ -627,24 +706,118 @@ pub fn tokens(a: Allocator, s: c.store.Store, deploys_state: ?[]const u8, chain_
     return out.items;
 }
 
-fn respond(a: Allocator, status: u64, body: []const u8) !Value {
-    return .{ .map = try a.dupe(c.cbor.Entry, &.{
-        .{ .key = "status", .value = .{ .uint = status } },
-        .{ .key = "type", .value = .{ .text = "application/json" } },
-        .{ .key = "body", .value = .{ .bytes = body } },
-    }) };
+/// The `ids` form (0.14.0, D17): one row per id in the query's order, the token as listed when the
+/// discovery topic admitted its deploy, else `{tokenId, listed: false}`.
+pub fn byIds(a: Allocator, s: c.store.Store, deploys_state: ?[]const u8, ids: []const []const u8) ![]const Row {
+    var svc = try Service.loadIndex(a, s, service_name, index_name, spec.maps, deploys_state);
+    const out = try a.alloc(Row, ids.len);
+    for (ids, out) |id, *r| {
+        r.* = .{ .unknown = id };
+        const key = tokenKeyOf(id) orelse continue;
+        if (!(try svc.map("deploys").has(&key))) continue;
+        if (try listedOf(a, s, &key)) |l| r.* = .{ .listed = l };
+    }
+    return out;
 }
 
-/// The read `/<app>/color/tokens` (the route handler contract, any method): `{limit?, skip?}` →
-/// 200 `[{tokenId, topic, sym, dec, icon?, txid, vout}]`, or 400 `{status: "error", message}`.
-/// `deploys_state` is the program's index's record (the head `<app>/ls_color`), `chain_state` the head `chain/state`'s.
+/// The cache classes (exchange-api §routes): `state` for what moves; `imm` for the bytes of a
+/// transaction the chain state holds proven (mined: its proof's block on the chain).
+pub const cache_state = "public, max-age=5";
+pub const cache_imm = "public, max-age=31536000, immutable";
+
+fn respondWith(a: Allocator, status: u64, typ: []const u8, cache: ?[]const u8, body: []const u8) !Value {
+    var es: std.ArrayList(c.cbor.Entry) = .empty;
+    try es.appendSlice(a, &.{
+        .{ .key = "status", .value = .{ .uint = status } },
+        .{ .key = "type", .value = .{ .text = typ } },
+        .{ .key = "body", .value = .{ .bytes = body } },
+    });
+    if (cache) |cc| try es.append(a, .{ .key = "headers", .value = .{ .map = try a.dupe(c.cbor.Entry, &.{.{ .key = "cache-control", .value = .{ .text = cc } }}) } });
+    return .{ .map = es.items };
+}
+
+fn respond(a: Allocator, status: u64, body: []const u8) !Value {
+    return respondWith(a, status, "application/json", null, body);
+}
+
+fn jsonOf(a: Allocator, v: anytype) ![]const u8 {
+    var w: std.Io.Writer.Allocating = .init(a);
+    try std.json.Stringify.value(v, .{ .emit_null_optional_fields = false }, &w.writer);
+    return w.written();
+}
+
+/// The read `/<app>/tokens` (the route handler contract, any method): `{limit?, skip?}` → 200
+/// `[{tokenId, topic, sym, dec, iconUrl?, txid, vout}]`; `?ids=a,b` → one row per id in order,
+/// `{tokenId, listed: false}` for an id not listed; 400 `{status: "error", message}` on a bad query.
+/// `Cache-Control: public, max-age=5`. `deploys_state` is the program's index's record (the head
+/// `<app>/ls_color`), `chain_state` the head `chain/state`'s.
 pub fn tokensRoute(a: Allocator, s: c.store.Store, deploys_state: ?[]const u8, chain_state: ?[]const u8, req: Value) !Value {
     const q = parseTokensQuery(a, req.getText("query") orelse "", req.getBytes("body") orelse "") catch
-        return respond(a, 400, "{\"status\":\"error\",\"message\":\"the query is {limit?: 1..100, skip?: 0..100000}, in the query string or a JSON body\"}");
-    const list = try tokens(a, s, deploys_state, chain_state, q);
-    var w: std.Io.Writer.Allocating = .init(a);
-    try std.json.Stringify.value(list, .{ .emit_null_optional_fields = false }, &w.writer);
-    return respond(a, 200, w.written());
+        return respond(a, 400, "{\"status\":\"error\",\"message\":\"the query is {limit?: 1..100, skip?: 0..100000}, in the query string or a JSON body, or ids=<txid>_<vout>,… in the query string\"}");
+    const body = if (q.ids) |ids| try jsonOf(a, try byIds(a, s, deploys_state, ids)) else try jsonOf(a, try tokens(a, s, deploys_state, chain_state, q));
+    return respondWith(a, 200, "application/json", cache_state, body);
+}
+
+/// What a token's read names past the prefix row (`/<app>/`): `<token>`, `<token>/icon` or
+/// `<token>/deploy`, `<token>` exactly `<txid>_<vout>`; null for anything else.
+pub const TokenPath = struct { key: [36]u8, part: enum { detail, icon, deploy } };
+
+pub fn tokenPathOf(rest: []const u8) ?TokenPath {
+    const slash = std.mem.indexOfScalar(u8, rest, '/');
+    const key = tokenKeyOf(rest[0 .. slash orelse rest.len]) orelse return null;
+    const tail = if (slash) |i| rest[i + 1 ..] else return .{ .key = key, .part = .detail };
+    if (eql(u8, tail, "icon")) return .{ .key = key, .part = .icon };
+    if (eql(u8, tail, "deploy")) return .{ .key = key, .part = .deploy };
+    return null;
+}
+
+/// The part of the request's route past its prefix row's address (as served, `/<app>/`); null when
+/// the route is not under it.
+fn restOf(req: Value) ?[]const u8 {
+    const route = req.getText("route") orelse req.getText("path") orelse return null;
+    const m = req.get("match") orelse return null;
+    const p = m.getText("address") orelse return null;
+    if (!std.mem.startsWith(u8, route, p)) return null;
+    return route[p.len..];
+}
+
+/// Whether the chain state holds `txid` proven: a proof whose block is on its chain (as its BEEF builder reads it).
+fn provenIn(ch: *lookup.Chain, txid: [32]u8) !bool {
+    return (try ch.minedStatus(txid)) == .proven;
+}
+
+/// The cache class of a transaction's bytes: `imm` when proven, else `state`.
+pub fn cacheOf(proven: bool) []const u8 {
+    return if (proven) cache_imm else cache_state;
+}
+
+const not_found = "{\"status\":\"error\",\"message\":\"not found\"}";
+
+/// The prefix row `/<app>/` (0.14.0, D10; any method), by the route past the prefix:
+///   `<token>`         200 JSON `{tokenId, topic, sym, dec, txid, vout, iconUrl?}`, `state`
+///   `<token>/icon`    200 the embedded icon's bytes, its media type; `imm` when the deploy is proven, else `state`
+///   `<token>/deploy`  200 the deploy's Atomic BEEF from the chain state, `application/octet-stream`; the same rule
+/// `<token>` exactly `<txid>_<vout>`, its deploy one the discovery topic admitted; anything else 404
+/// (a BRC-161 JSON deploy has no `/icon`: its `iconUrl` is its http(s) icon string).
+pub fn tokenRoute(a: Allocator, s: c.store.Store, deploys_state: ?[]const u8, chain_state: ?[]const u8, req: Value) !Value {
+    const tp = tokenPathOf(restOf(req) orelse "") orelse return respond(a, 404, not_found);
+    var svc = try Service.loadIndex(a, s, service_name, index_name, spec.maps, deploys_state);
+    if (!(try svc.map("deploys").has(&tp.key))) return respond(a, 404, not_found);
+    const d = (try deployOf(a, s, &tp.key)) orelse return respond(a, 404, not_found);
+    if (tp.part == .detail) return respondWith(a, 200, "application/json", cache_state, try jsonOf(a, d.listed));
+    var ch = try c.open(a, s, chain_state, .main);
+    const txid = opOf(&tp.key).txid;
+    switch (tp.part) {
+        .detail => unreachable,
+        .icon => {
+            const ic = d.icon orelse return respond(a, 404, not_found);
+            return respondWith(a, 200, ic.media_type, cacheOf(try provenIn(&ch, txid)), ic.bytes);
+        },
+        .deploy => {
+            const beef = (try ch.beefOf(txid)) orelse return respond(a, 404, not_found);
+            return respondWith(a, 200, "application/octet-stream", cacheOf(try provenIn(&ch, txid)), beef);
+        },
+    }
 }
 
 /// The app a read's call names: the read route's `app` (the install's; a read route names no program,
@@ -661,15 +834,16 @@ var delegate = false;
 
 fn run(a: Allocator) anyerror!void {
     const in = try sk.input(a);
-    if (!eql(u8, in.getText("fn") orelse "", "tokens")) {
+    const func = in.getText("fn") orelse "";
+    const route = if (eql(u8, func, "tokens")) &tokensRoute else if (eql(u8, func, "token")) &tokenRoute else {
         delegate = true;
         return;
-    }
+    };
     const req = try sk.callArg(a, in);
     const s = sk.store();
     const app = try appOfRead(a, s, req);
     const deploys = try sk.head(a, try lookup.headName(a, app, index_name));
-    const out = try tokensRoute(a, s, deploys, try sk.head(a, lookup.chain_head), req);
+    const out = try route(a, s, deploys, try sk.head(a, lookup.chain_head), req);
     // A read route's filter (shruggr/skein#143): the http answer as the filter's `{answer: …}`.
     try sk.answer(a, if (isFilter(in)) try asFilterAnswer(a, out) else out);
 }
@@ -680,12 +854,13 @@ pub fn isFilter(in: Value) bool {
     return f == .boolean and f.boolean;
 }
 
-/// An http answer `{status, type, body}` as a filter's `{answer: {status, type, body}}`.
+/// An http answer `{status, type, body, headers?}` as a filter's `{answer: …}`.
 pub fn asFilterAnswer(a: Allocator, http: Value) !Value {
     return .{ .map = try a.dupe(c.cbor.Entry, &.{.{ .key = "answer", .value = http }}) };
 }
 
-/// A call: fn "tokens" (the token list, a read), else the lookup contract's (fn "lookup", the hooks,
+/// A call: fn "tokens" (the token list, a read), fn "token" (a token's detail, icon or deploy, a
+/// read; 0.14.0), else the lookup contract's (fn "lookup", the hooks,
 /// "metadata", "documentation").
 pub fn main() u8 {
     const rc = sk.main("color-lookup", run);

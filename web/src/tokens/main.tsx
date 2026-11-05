@@ -8,8 +8,8 @@
  * registrations (BRC-207; David Case, 2026-10-08): `register` of its topic
  * `tm_color_<assetId>`, then `registerLookup` of `ls_color_<assetId>`
  * (skein-overlay 0.11.0); deregistering reverses both. Each token shows its
- * symbol and icon from its deploy (the read `/<app>/color/tokens`: a
- * 1Color deploy's embedded image as a data URL).
+ * symbol and icon from its deploy (the read `/<app>/tokens`: the icon by
+ * its `iconUrl`, 0.14.0).
  * A token's register seeds its topic with the token's deploy (skein-overlay
  * 0.7.8, `seed: [<deploy txid>]`): the engine judges it from what the
  * instance's chain state holds, and the answer says `seeded` or `missing`.
@@ -184,11 +184,10 @@ function TokensPage() {
   );
 }
 
-/** A token's icon and symbol from its deploy: a 1Color deploy's embedded image (a data URL); none otherwise. */
+/** A token's icon and symbol from its deploy: the list's `iconUrl` (resolved by `listTokens`); none without one. */
 function TokenIcon({ t }: { t?: Listed }) {
   if (!t) return null;
-  const img = t.icon?.startsWith("data:") ? t.icon : undefined;
-  return <span className="small">{img && <img src={img} alt="" width={20} height={20} style={{ verticalAlign: "middle", marginRight: 4 }} />}{t.sym}</span>;
+  return <span className="small">{t.iconUrl && <img src={t.iconUrl} alt="" width={20} height={20} style={{ verticalAlign: "middle", marginRight: 4 }} />}{t.sym}</span>;
 }
 
 mount("Tokens", <TokensPage />);
