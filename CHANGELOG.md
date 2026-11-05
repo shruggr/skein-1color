@@ -4,6 +4,24 @@ Released versions of skein-1color (skein-mandala until 0.9.2). Versions
 before 0.10.0 are in the git history (each release commit names what
 changed).
 
+## 0.15.0 (2026-11-05)
+
+Holders and the discovery row's supply and height (agent-env plans/history-api-build-2026-11-05.md
+§2; decisions D4, D5 in plans/history-api-2026-11-05.md). `color-lookup` only.
+
+- **The balance table** (D4): per token, `balances: tok ‖ pkh → amount`, `byBalance: tok ‖ (2^64 −
+  1 − amount) ‖ pkh → null`, `holders: tok → count`, kept at admitted / spent / rejected for the
+  unspent value outputs whose lock is P2PKH (pools and other contracts not counted); re-keyed on
+  every change, a zero balance leaves both maps. No backfill (rebuild, not code).
+- **`/<app>/<token>/holders?limit=&skip=`** on the prefix row (filter `token`): `{count, rows:
+  [{address, balance}]}` largest first, `limit` 1 to 100, `max-age=5`; the address on
+  `chain/state`'s network. Needs no deploy in the discovery index (a token instance's own topic
+  feeds its table).
+- **The discovery rows** (`/tokens`, `?ids=`, `/<token>`; D5) gain `amount` (the deploy output's
+  supply, 0 for an authority-only deploy) and `height` (the deploy txid's height in the overlay
+  state's `placed` under `tm_color`, null while unmined).
+- `bin/color-lookup.wasm` rebuilt; manifest version 0.15.0. zig 39.
+
 ## 0.14.0 (2026-11-04)
 
 The discovery routes of the Open Exchange public read API (exchange-api

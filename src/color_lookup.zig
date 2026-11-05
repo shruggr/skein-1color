@@ -52,6 +52,20 @@
 //! spender; `rejected` drops the transaction's outputs and gives back the
 //! ones it had spent. A hook for a topic that is not a token's does nothing.
 //!
+//! The BALANCE TABLE (0.15.0, D4: agent-env plans/history-api-2026-11-05.md), per token, over the
+//! unspent value outputs (`values`) whose locking script is P2PKH (a binary output's lock after the
+//! prefix; a JSON output's script around the envelope: the P2PKH on one side, nothing on the other);
+//! other outputs (pools, contracts) are not counted:
+//!
+//!   balances     tok ‖ pkh (20) → amount (u64 BE, 8 bytes)        the address's balance, > 0
+//!   byBalance    tok ‖ (2^64 − 1 − amount) (u64 BE) ‖ pkh → null  largest first
+//!   holders      tok → count (u64 BE, 8 bytes)                     the addresses with a balance
+//!
+//! kept exactly as `values` is: an output entering `values` (admitted, or given back by a
+//! rejection) credits its address, one leaving it (spent, or its transaction rejected) debits it;
+//! `byBalance` re-keyed on every change; a zero balance leaves both. No backfill: outputs indexed
+//! before 0.15.0 are not counted.
+//!
 //! The discovery topic `tm_color` feeds (by the topic, as every hook) the map
 //!
 //!   deploys      tok → null                       every admitted deploy (a token id is its deploy outpoint)
@@ -98,7 +112,7 @@ pub const index_name = service_name;
 const deploys_topic = color.name.deploys_topic;
 
 pub const spec: lookup.Spec = .{
-    .maps = &.{ "values", "authorities", "outputs", "deploys", "admitted" },
+    .maps = &.{ "values", "authorities", "outputs", "deploys", "admitted", "balances", "byBalance", "holders" },
     .index = index_name,
     .answer = answer,
     .admitted = admitted,
@@ -153,6 +167,77 @@ fn kindOf(a: Allocator, id: bsv21.TokenId, tx: lookup.Tx, vout: u32) !?Kind {
     };
 }
 
+// ---------------------------------------------------------------- the balance table (0.15.0)
+
+/// The key hash of a P2PKH lock (`76 a9 14 <20> 88 ac`), or null.
+fn p2pkhOf(lock: []const u8) ?[20]u8 {
+    if (lock.len != 25 or lock[0] != 0x76 or lock[1] != 0xa9 or lock[2] != 0x14 or lock[23] != 0x88 or lock[24] != 0xac) return null;
+    return lock[3..23].*;
+}
+
+/// What a value output of token `id` credits: its address's key hash and its amount, when its lock is
+/// P2PKH (binary: the lock after the prefix; JSON: the script around the envelope, P2PKH on one side
+/// and nothing on the other); null for any other output.
+pub fn holdingOf(a: Allocator, id: bsv21.TokenId, txid: [32]u8, vout: u32, script: []const u8) !?struct { pkh: [20]u8, amount: u64 } {
+    const t = (try bsv21.tokenOf(a, id, txid, vout, script)) orelse return null;
+    if (t.role != .value or t.amount == 0) return null;
+    const pkh = switch (t.form) {
+        .binary => p2pkhOf(t.binary.?.lock),
+        .json => blk: {
+            const j = t.json.?;
+            if (j.prefix.len == 0) break :blk p2pkhOf(j.suffix);
+            if (j.suffix.len == 0) break :blk p2pkhOf(j.prefix);
+            break :blk null;
+        },
+    } orelse return null;
+    return .{ .pkh = pkh, .amount = t.amount };
+}
+
+fn be64(n: u64) [8]u8 {
+    var b: [8]u8 = undefined;
+    std.mem.writeInt(u64, &b, n, .big);
+    return b;
+}
+
+fn u64Of(v: ?c.store.MValue) !u64 {
+    const x = v orelse return 0;
+    if (x != .bytes or x.bytes.len != 8) return error.BadIndex;
+    return std.mem.readInt(u64, x.bytes[0..8], .big);
+}
+
+/// `tk`'s address `pkh` gains (`credit`) or loses `amount`: `balances` set or dropped at zero,
+/// `byBalance` re-keyed, `holders` counted.
+fn adjust(a: Allocator, svc: *Service, tk: []const u8, pkh: [20]u8, amount: u64, credit: bool) !void {
+    const bk = try cat(a, &.{ tk, &pkh });
+    const old = try u64Of(try svc.map("balances").get(bk));
+    const new = if (credit) std.math.add(u64, old, amount) catch std.math.maxInt(u64) else old -| amount;
+    if (old == new) return;
+    if (old > 0) _ = try svc.map("byBalance").remove(try cat(a, &.{ tk, &be64(std.math.maxInt(u64) - old), &pkh }));
+    if (new > 0) {
+        try svc.map("balances").put(bk, .{ .bytes = try a.dupe(u8, &be64(new)) });
+        try svc.map("byBalance").add(try cat(a, &.{ tk, &be64(std.math.maxInt(u64) - new), &pkh }));
+    } else _ = try svc.map("balances").remove(bk);
+    if ((old == 0) != (new == 0)) {
+        const n = try u64Of(try svc.map("holders").get(tk));
+        const m = if (new > 0) n + 1 else n -| 1;
+        if (m == 0) _ = try svc.map("holders").remove(tk) else try svc.map("holders").put(tk, .{ .bytes = try a.dupe(u8, &be64(m)) });
+    }
+}
+
+/// The output `vout` of `t` (txid `txid`) entering (`credit`) or leaving `values`: its holding, if any, adjusted.
+fn holdingMoved(a: Allocator, svc: *Service, id: bsv21.TokenId, txid: [32]u8, t: c.bsvz.transaction.Transaction, vout: u32, credit: bool) !void {
+    if (vout >= t.outputs.len) return;
+    const h = (try holdingOf(a, id, txid, vout, t.outputs[vout].locking_script.bytes)) orelse return;
+    try adjust(a, svc, &tokKey(id), h.pkh, h.amount, credit);
+}
+
+/// The same, for an output read from the store by its txid (a spent or given-back previous coin).
+fn heldMoved(a: Allocator, svc: *Service, id: bsv21.TokenId, txid: [32]u8, vout: u32, credit: bool) !void {
+    const raw = svc.store.tryGet(a, &c.store.hashCid(.tx, txid)) orelse return;
+    const t = c.bsvz.transaction.Transaction.parse(a, raw) catch return;
+    try holdingMoved(a, svc, id, txid, t, vout, credit);
+}
+
 // The hooks come once per admitted transaction and topic, under whichever of the program's names
 // listens first (skein-overlay 0.11.0): they go by the topic, never by the name.
 
@@ -173,7 +258,10 @@ fn admitted(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx, outpu
         const k = (try kindOf(a, id, tx, vout)) orelse continue;
         const op = opKey(tx.txid, vout);
         try svc.map("outputs").put(&op, .{ .bytes = try cat(a, &.{ &.{@intFromEnum(k)}, &tk }) });
-        try svc.map(indexName(k)).add(try cat(a, &.{ &tk, &op }));
+        const ik = try cat(a, &.{ &tk, &op });
+        // 0.15.0: an output new to `values` credits its holding (a dupe hook call credits nothing).
+        if (k == .value and !(try svc.map("values").has(ik))) try holdingMoved(a, svc, id, tx.txid, tx.tx, vout, true);
+        try svc.map(indexName(k)).add(ik);
     }
 }
 
@@ -187,12 +275,13 @@ fn entryOf(v: c.store.MValue) !Entry {
 
 fn spent(a: Allocator, svc: *Service, topic: []const u8, outpoint: lookup.Outpoint, spending: lookup.Tx) anyerror!void {
     if (eql(u8, topic, deploys_topic)) return; // a registry: a deploy stays listed once spent
-    _ = token.tokenIdOf(topic) orelse return;
+    const id = token.tokenIdOf(topic) orelse return;
     const op = opKey(outpoint.txid, outpoint.vout);
     const v = (try svc.map("outputs").get(&op)) orelse return; // not one it indexed
     const e = try entryOf(v);
     if (e.spender != null) return;
-    _ = try svc.map(indexName(e.kind)).remove(try cat(a, &.{ e.tok, &op }));
+    if (try svc.map(indexName(e.kind)).remove(try cat(a, &.{ e.tok, &op })) and e.kind == .value)
+        try heldMoved(a, svc, id, outpoint.txid, outpoint.vout, false);
     try svc.map("outputs").put(&op, .{ .bytes = try cat(a, &.{ v.bytes, &spending.txid }) });
 }
 
@@ -211,7 +300,8 @@ fn rejected(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx) anyer
         const op = opKey(tx.txid, @intCast(vout));
         const v = (try svc.map("outputs").get(&op)) orelse continue;
         const e = try entryOf(v);
-        _ = try svc.map(indexName(e.kind)).remove(try cat(a, &.{ e.tok, &op }));
+        if (try svc.map(indexName(e.kind)).remove(try cat(a, &.{ e.tok, &op })) and e.kind == .value)
+            try holdingMoved(a, svc, id, tx.txid, tx.tx, @intCast(vout), false);
         _ = try svc.map("outputs").remove(&op);
     }
     // What it spent is unspent again.
@@ -222,7 +312,9 @@ fn rejected(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx) anyer
         const by = e.spender orelse continue;
         if (!eql(u8, by, &tx.txid)) continue;
         try svc.map("outputs").put(&op, .{ .bytes = try a.dupe(u8, v.bytes[0..37]) });
-        try svc.map(indexName(e.kind)).add(try cat(a, &.{ e.tok, &op }));
+        const ik = try cat(a, &.{ e.tok, &op });
+        if (e.kind == .value and !(try svc.map("values").has(ik))) try heldMoved(a, svc, id, in.previous_outpoint.txid.bytes, in.previous_outpoint.index, true);
+        try svc.map(indexName(e.kind)).add(ik);
     }
 }
 
@@ -560,6 +652,29 @@ pub const Listed = struct {
     iconUrl: ?[]const u8 = null,
     txid: []const u8,
     vout: u32,
+    /// The deploy output's supply (0.15.0, D5): its amount, 0 for an authority-only deploy.
+    amount: u64 = 0,
+    /// The deploy's block height (0.15.0, D5): where the overlay has the deploy txid `placed` under
+    /// the discovery topic (skein-overlay state.zig `placed`, written once its proof landed); null
+    /// while not mined. Written as null, not left out.
+    height: ?u32 = null,
+
+    pub fn jsonStringify(self: Listed, jw: anytype) !void {
+        try jw.beginObject();
+        inline for (.{ "tokenId", "topic", "sym", "dec" }) |f| {
+            try jw.objectField(f);
+            try jw.write(@field(self, f));
+        }
+        if (self.iconUrl) |u| {
+            try jw.objectField("iconUrl");
+            try jw.write(u);
+        }
+        inline for (.{ "txid", "vout", "amount", "height" }) |f| {
+            try jw.objectField(f);
+            try jw.write(@field(self, f));
+        }
+        try jw.endObject();
+    }
 };
 
 /// A row of the `ids` form: the token as listed, or `{tokenId, listed: false}` for an id discovery
@@ -611,9 +726,32 @@ fn hexOf(a: Allocator, internal: [32]u8) ![]const u8 {
 /// its media type is an RFC 6838 `type/subtype`.
 pub const Deploy = struct { listed: Listed, icon: ?color.brc162.Icon = null };
 
+/// The overlay's `placed` map (skein-overlay state.zig: `tp ‖ txid → height (u32 BE) ‖ offset (u64 BE)
+/// ‖ block hash`) in its state record (the head `<app>/state`; null: none), for the discovery rows'
+/// `height` (0.15.0).
+pub const Placed = struct {
+    map: ?c.store.Map = null,
+
+    pub fn load(a: Allocator, s: c.store.Store, overlay_state: ?[]const u8) !Placed {
+        const sc = overlay_state orelse return .{};
+        const rec = try s.getValue(a, sc);
+        const roots = rec.get("maps") orelse return .{};
+        const maps = try c.store.Maps.create(a, s);
+        return .{ .map = maps.map(roots.getCid("placed")) };
+    }
+
+    /// The height `txid` is placed at under the discovery topic, or null.
+    pub fn heightOf(self: *Placed, a: Allocator, txid: [32]u8) !?u32 {
+        const m = if (self.map) |*x| x else return null;
+        const v = (try m.get(try c.store.nameKey(a, deploys_topic, &.{&txid}))) orelse return null;
+        if (v != .bytes or v.bytes.len < 4) return error.BadIndex;
+        return std.mem.readInt(u32, v.bytes[0..4], .big);
+    }
+};
+
 /// A deploy the discovery index holds (its key: txid display ‖ vout BE), read from its transaction:
 /// null when the store does not hold it or the output is no deploy.
-fn deployOf(a: Allocator, s: c.store.Store, key: []const u8) !?Deploy {
+fn deployOf(a: Allocator, s: c.store.Store, key: []const u8, placed: *Placed) !?Deploy {
     const op = opOf(key);
     const raw = s.tryGet(a, &c.store.hashCid(.tx, op.txid)) orelse return null;
     const tx = c.bsvz.transaction.Transaction.parse(a, raw) catch return null;
@@ -631,6 +769,8 @@ fn deployOf(a: Allocator, s: c.store.Store, key: []const u8) !?Deploy {
         .dec = 0,
         .txid = try hexOf(a, op.txid),
         .vout = op.vout,
+        .amount = t.amount,
+        .height = try placed.heightOf(a, op.txid),
     } };
     switch (t.form) {
         .binary => {
@@ -654,8 +794,8 @@ fn deployOf(a: Allocator, s: c.store.Store, key: []const u8) !?Deploy {
     return out;
 }
 
-fn listedOf(a: Allocator, s: c.store.Store, key: []const u8) !?Listed {
-    return if (try deployOf(a, s, key)) |d| d.listed else null;
+fn listedOf(a: Allocator, s: c.store.Store, key: []const u8, placed: *Placed) !?Listed {
+    return if (try deployOf(a, s, key, placed)) |d| d.listed else null;
 }
 
 /// Whether a BRC-161 icon string is an http(s) URL (the scheme in any case).
@@ -681,8 +821,9 @@ fn restrictedName(n: []const u8) bool {
 /// map `deploys` of the program's index, its state record `deploys_state`), newest first by the
 /// chain state (`chain_state`; unmined first, then by block height and position, highest first),
 /// `skip` then `limit` of them. Reads only. (The `ids` form is `byIds`.)
-pub fn tokens(a: Allocator, s: c.store.Store, deploys_state: ?[]const u8, chain_state: ?[]const u8, q: TokensQuery) ![]const Listed {
+pub fn tokens(a: Allocator, s: c.store.Store, deploys_state: ?[]const u8, chain_state: ?[]const u8, overlay_state: ?[]const u8, q: TokensQuery) ![]const Listed {
     var svc = try Service.loadIndex(a, s, service_name, index_name, spec.maps, deploys_state);
+    var placed = try Placed.load(a, s, overlay_state);
     // The chain app's state through the SDK's one opener (shruggr/skein-sdk#1): its record's network, else main.
     var ch = try c.open(a, s, chain_state, .main);
     const all = try svc.map("deploys").prefixed(&.{});
@@ -696,7 +837,7 @@ pub fn tokens(a: Allocator, s: c.store.Store, deploys_state: ?[]const u8, chain_
     var skipped: u64 = 0;
     for (ages) |x| {
         if (out.items.len >= q.limit) break;
-        const l = (try listedOf(a, s, x.key)) orelse continue;
+        const l = (try listedOf(a, s, x.key, &placed)) orelse continue;
         if (skipped < q.skip) {
             skipped += 1;
             continue;
@@ -708,14 +849,15 @@ pub fn tokens(a: Allocator, s: c.store.Store, deploys_state: ?[]const u8, chain_
 
 /// The `ids` form (0.14.0, D17): one row per id in the query's order, the token as listed when the
 /// discovery topic admitted its deploy, else `{tokenId, listed: false}`.
-pub fn byIds(a: Allocator, s: c.store.Store, deploys_state: ?[]const u8, ids: []const []const u8) ![]const Row {
+pub fn byIds(a: Allocator, s: c.store.Store, deploys_state: ?[]const u8, overlay_state: ?[]const u8, ids: []const []const u8) ![]const Row {
     var svc = try Service.loadIndex(a, s, service_name, index_name, spec.maps, deploys_state);
+    var placed = try Placed.load(a, s, overlay_state);
     const out = try a.alloc(Row, ids.len);
     for (ids, out) |id, *r| {
         r.* = .{ .unknown = id };
         const key = tokenKeyOf(id) orelse continue;
         if (!(try svc.map("deploys").has(&key))) continue;
-        if (try listedOf(a, s, &key)) |l| r.* = .{ .listed = l };
+        if (try listedOf(a, s, &key, &placed)) |l| r.* = .{ .listed = l };
     }
     return out;
 }
@@ -751,16 +893,16 @@ fn jsonOf(a: Allocator, v: anytype) ![]const u8 {
 /// `{tokenId, listed: false}` for an id not listed; 400 `{status: "error", message}` on a bad query.
 /// `Cache-Control: public, max-age=5`. `deploys_state` is the program's index's record (the head
 /// `<app>/ls_color`), `chain_state` the head `chain/state`'s.
-pub fn tokensRoute(a: Allocator, s: c.store.Store, deploys_state: ?[]const u8, chain_state: ?[]const u8, req: Value) !Value {
+pub fn tokensRoute(a: Allocator, s: c.store.Store, deploys_state: ?[]const u8, chain_state: ?[]const u8, overlay_state: ?[]const u8, req: Value) !Value {
     const q = parseTokensQuery(a, req.getText("query") orelse "", req.getBytes("body") orelse "") catch
         return respond(a, 400, "{\"status\":\"error\",\"message\":\"the query is {limit?: 1..100, skip?: 0..100000}, in the query string or a JSON body, or ids=<txid>_<vout>,… in the query string\"}");
-    const body = if (q.ids) |ids| try jsonOf(a, try byIds(a, s, deploys_state, ids)) else try jsonOf(a, try tokens(a, s, deploys_state, chain_state, q));
+    const body = if (q.ids) |ids| try jsonOf(a, try byIds(a, s, deploys_state, overlay_state, ids)) else try jsonOf(a, try tokens(a, s, deploys_state, chain_state, overlay_state, q));
     return respondWith(a, 200, "application/json", cache_state, body);
 }
 
 /// What a token's read names past the prefix row (`/<app>/`): `<token>`, `<token>/icon` or
 /// `<token>/deploy`, `<token>` exactly `<txid>_<vout>`; null for anything else.
-pub const TokenPath = struct { key: [36]u8, part: enum { detail, icon, deploy } };
+pub const TokenPath = struct { key: [36]u8, part: enum { detail, icon, deploy, holders } };
 
 pub fn tokenPathOf(rest: []const u8) ?TokenPath {
     const slash = std.mem.indexOfScalar(u8, rest, '/');
@@ -768,6 +910,7 @@ pub fn tokenPathOf(rest: []const u8) ?TokenPath {
     const tail = if (slash) |i| rest[i + 1 ..] else return .{ .key = key, .part = .detail };
     if (eql(u8, tail, "icon")) return .{ .key = key, .part = .icon };
     if (eql(u8, tail, "deploy")) return .{ .key = key, .part = .deploy };
+    if (eql(u8, tail, "holders")) return .{ .key = key, .part = .holders };
     return null;
 }
 
@@ -795,20 +938,30 @@ const not_found = "{\"status\":\"error\",\"message\":\"not found\"}";
 
 /// The prefix row `/<app>/` (0.14.0, D10; any method), by the route past the prefix:
 ///   `<token>`         200 JSON `{tokenId, topic, sym, dec, txid, vout, iconUrl?}`, `state`
+///   `<token>/holders` (0.15.0) 200 JSON `{count, rows: [{address, balance}]}` largest first, `?limit=1..100&skip=`,
+///                     `state`; from the balance table the token's own topic feeds (on its token instance)
 ///   `<token>/icon`    200 the embedded icon's bytes, its media type; `imm` when the deploy is proven, else `state`
 ///   `<token>/deploy`  200 the deploy's Atomic BEEF from the chain state, `application/octet-stream`; the same rule
 /// `<token>` exactly `<txid>_<vout>`, its deploy one the discovery topic admitted; anything else 404
 /// (a BRC-161 JSON deploy has no `/icon`: its `iconUrl` is its http(s) icon string).
-pub fn tokenRoute(a: Allocator, s: c.store.Store, deploys_state: ?[]const u8, chain_state: ?[]const u8, req: Value) !Value {
+pub fn tokenRoute(a: Allocator, s: c.store.Store, deploys_state: ?[]const u8, chain_state: ?[]const u8, overlay_state: ?[]const u8, req: Value) !Value {
     const tp = tokenPathOf(restOf(req) orelse "") orelse return respond(a, 404, not_found);
     var svc = try Service.loadIndex(a, s, service_name, index_name, spec.maps, deploys_state);
+    // 0.15.0: the token's holders, from the balance table its own topic feeds (no deploy needed here).
+    if (tp.part == .holders) {
+        const hq = parseHoldersQuery(req.getText("query") orelse "") catch
+            return respond(a, 400, "{\"status\":\"error\",\"message\":\"the query is limit=1..100, skip=0..100000\"}");
+        const ch = try c.open(a, s, chain_state, .main);
+        return respondWith(a, 200, "application/json", cache_state, try holdersJson(a, &svc, &tp.key, ch.network, hq));
+    }
     if (!(try svc.map("deploys").has(&tp.key))) return respond(a, 404, not_found);
-    const d = (try deployOf(a, s, &tp.key)) orelse return respond(a, 404, not_found);
+    var placed = try Placed.load(a, s, overlay_state);
+    const d = (try deployOf(a, s, &tp.key, &placed)) orelse return respond(a, 404, not_found);
     if (tp.part == .detail) return respondWith(a, 200, "application/json", cache_state, try jsonOf(a, d.listed));
     var ch = try c.open(a, s, chain_state, .main);
     const txid = opOf(&tp.key).txid;
     switch (tp.part) {
-        .detail => unreachable,
+        .detail, .holders => unreachable,
         .icon => {
             const ic = d.icon orelse return respond(a, 404, not_found);
             return respondWith(a, 200, ic.media_type, cacheOf(try provenIn(&ch, txid)), ic.bytes);
@@ -818,6 +971,64 @@ pub fn tokenRoute(a: Allocator, s: c.store.Store, deploys_state: ?[]const u8, ch
             return respondWith(a, 200, "application/octet-stream", cacheOf(try provenIn(&ch, txid)), beef);
         },
     }
+}
+
+/// `<token>/holders`' query (0.15.0): `limit` 1 to 100 (default 100), `skip` 0 to 100000 (default 0),
+/// from the query string; anything else refused.
+pub const HoldersQuery = struct { limit: u64 = max_limit, skip: u64 = 0 };
+
+pub fn parseHoldersQuery(query: []const u8) !HoldersQuery {
+    var q: HoldersQuery = .{};
+    var it = std.mem.splitScalar(u8, if (std.mem.startsWith(u8, query, "?")) query[1..] else query, '&');
+    while (it.next()) |kv| {
+        if (kv.len == 0) continue;
+        const i = std.mem.indexOfScalar(u8, kv, '=') orelse return error.BadQuery;
+        const v = std.fmt.parseInt(u64, kv[i + 1 ..], 10) catch return error.BadQuery;
+        if (eql(u8, kv[0..i], "limit")) {
+            if (v < 1 or v > max_limit) return error.BadQuery;
+            q.limit = v;
+        } else if (eql(u8, kv[0..i], "skip")) {
+            if (v > max_skip) return error.BadQuery;
+            q.skip = v;
+        } else return error.BadQuery;
+    }
+    return q;
+}
+
+/// One holder: the P2PKH address on `network` and the balance in token base units.
+pub const Holder = struct { address: []const u8, balance: u64 };
+
+/// The P2PKH address of `pkh` on `network` (base58check, the network's P2PKH version byte).
+pub fn addressOf(a: Allocator, network: c.chain.Network, pkh: [20]u8) ![]const u8 {
+    const net: c.bsvz.primitives.network.Network = switch (network) {
+        .main => .mainnet,
+        .@"test" => .testnet,
+        .regtest => .regtest,
+    };
+    return c.bsvz.compat.address.encodeP2pkh(a, net, .{ .bytes = pkh });
+}
+
+/// The token `tk`'s holders, largest balance first (`byBalance`), `skip` then `limit` of them, and
+/// their count (`holders`).
+pub fn holdersOf(a: Allocator, svc: *Service, tk: []const u8, network: c.chain.Network, q: HoldersQuery) !struct { count: u64, rows: []const Holder } {
+    const all = try svc.map("byBalance").prefixed(tk);
+    const from: usize = @intCast(@min(q.skip, all.len));
+    const to = @min(all.len, from + @as(usize, @intCast(q.limit)));
+    const rows = try a.alloc(Holder, to - from);
+    for (all[from..to], rows) |kv, *r| {
+        if (kv.key.len != tk.len + 8 + 20) return error.BadIndex;
+        r.* = .{
+            .address = try addressOf(a, network, kv.key[tk.len + 8 ..][0..20].*),
+            .balance = std.math.maxInt(u64) - std.mem.readInt(u64, kv.key[tk.len..][0..8], .big),
+        };
+    }
+    return .{ .count = try u64Of(try svc.map("holders").get(tk)), .rows = rows };
+}
+
+/// `<token>/holders`' JSON: `{count, rows: [{address, balance}]}`.
+fn holdersJson(a: Allocator, svc: *Service, tk: []const u8, network: c.chain.Network, q: HoldersQuery) ![]const u8 {
+    const h = try holdersOf(a, svc, tk, network, q);
+    return jsonOf(a, .{ .count = h.count, .rows = h.rows });
 }
 
 /// The app a read's call names: the read route's `app` (the install's; a read route names no program,
@@ -843,7 +1054,8 @@ fn run(a: Allocator) anyerror!void {
     const s = sk.store();
     const app = try appOfRead(a, s, req);
     const deploys = try sk.head(a, try lookup.headName(a, app, index_name));
-    const out = try route(a, s, deploys, try sk.head(a, lookup.chain_head), req);
+    const overlay = try sk.head(a, try std.fmt.allocPrint(a, "{s}/state", .{app}));
+    const out = try route(a, s, deploys, try sk.head(a, lookup.chain_head), overlay, req);
     // A read route's filter (shruggr/skein#143): the http answer as the filter's `{answer: …}`.
     try sk.answer(a, if (isFilter(in)) try asFilterAnswer(a, out) else out);
 }

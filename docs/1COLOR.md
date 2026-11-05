@@ -287,6 +287,30 @@ a deploy the discovery topic admitted; any other path under the row is a
 | `/<app>/<token>` | `{tokenId, topic, sym, dec, txid, vout, iconUrl?}` (as a list row) | `public, max-age=5` |
 | `/<app>/<token>/icon` | the embedded icon's bytes, `Content-Type` its media type; 404 for a deploy without one (a BRC-161 JSON deploy always) | `public, max-age=31536000, immutable` when the deploy is proven in `chain/state` (a proof whose block is on its chain), else `public, max-age=5` |
 | `/<app>/<token>/deploy` | the deploy's Atomic BEEF from `chain/state` (`beefOf`), `application/octet-stream`; 404 when the chain state does not hold it | as `/icon` |
+| `/<app>/<token>/holders?limit=&skip=` (0.15.0) | `{count, rows: [{address, balance}]}` largest balance first, from the balance table (below); `limit` 1 to 100 (default 100), `skip` 0 to 100000; no deploy needed: on a token's own instance its topic `tm_color_<token>` feeds the table; `address` the P2PKH address on `chain/state`'s network (none: main) | `public, max-age=5` |
+
+The list and detail rows (0.15.0, D5) carry `amount`, the deploy output's supply (0 for an
+authority-only deploy), and `height`, the deploy's block height where the overlay has the deploy
+txid `placed` under `tm_color` (its state `<app>/state`, map `placed`, written once the proof
+landed), `null` while unmined (written, not left out).
+
+## The balance table (0.15.0)
+
+David Case, 2026-11-05 (agent-env plans/history-api-2026-11-05.md, D4): `color-lookup` keeps, per
+token, the balance of every address holding the token in P2PKH value outputs, maintained exactly as
+the unspent value index `values` is (an output entering it credits its address: admitted, or given
+back by a rejection; one leaving it debits it: spent, or its transaction rejected):
+
+| map | key → value |
+|---|---|
+| `balances` | `tok ‖ pkh (20) → amount (u64 BE)`, the address's balance, present only when > 0 |
+| `byBalance` | `tok ‖ (2^64 − 1 − amount) (u64 BE) ‖ pkh → null`, re-keyed on every change: largest first |
+| `holders` | `tok → count (u64 BE)`, the addresses with a balance |
+
+A value output counts when its lock is P2PKH (a 1Color output's lock after the prefix; a BRC-161
+output's script around the envelope: P2PKH on one side, nothing on the other). Pools and other
+contracts are not counted, nor a deploy's or an authority's output (not value outputs). No
+backfill: outputs indexed before 0.15.0 are not counted (rebuild the index).
 
 ## Registering a token
 

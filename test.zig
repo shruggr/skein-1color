@@ -1430,7 +1430,7 @@ test "tokens: every deploy tm_color admitted, its id `<txid>_<vout>`, topic, sym
     var l: Ls = .{ .a = a, .s = s };
     const t = names.deploys_topic;
 
-    try testing.expectEqual(@as(usize, 0), (try ls.tokens(a, s, null, null, .{})).len); // no index yet
+    try testing.expectEqual(@as(usize, 0), (try ls.tokens(a, s, null, null, null, .{})).len); // no index yet
 
     // A 1Color deploy with a payload {"dec": 2, "sym": "AB", "icon": ["image/png", h'010203']} (embedded).
     const payload = [_]u8{ 0xa3, 0x63, 'd', 'e', 'c', 0x02, 0x63, 's', 'y', 'm', 0x62, 'A', 'B', 0x64, 'i', 'c', 'o', 'n', 0x82, 0x69 } ++ "image/png".* ++ [_]u8{ 0x43, 1, 2, 3 };
@@ -1442,7 +1442,7 @@ test "tokens: every deploy tm_color admitted, its id `<txid>_<vout>`, topic, sym
     const td = f.raws.get("token_deploy").?; // a binary deploy without display fields
     try l.admitted(t, td, &.{0});
 
-    const list = try ls.tokens(a, s, l.state, null, .{});
+    const list = try ls.tokens(a, s, l.state, null, null, .{});
     try testing.expectEqual(@as(usize, 3), list.len);
     // Unmined, all three: by deploy outpoint, highest first.
     const want_order = blk: {
@@ -1486,18 +1486,18 @@ test "tokens: every deploy tm_color admitted, its id `<txid>_<vout>`, topic, sym
     }
 
     // skip, limit.
-    const page = try ls.tokens(a, s, l.state, null, .{ .skip = 1, .limit = 1 });
+    const page = try ls.tokens(a, s, l.state, null, null, .{ .skip = 1, .limit = 1 });
     try testing.expectEqual(@as(usize, 1), page.len);
     try testing.expectEqualStrings(list[1].txid, page[0].txid);
-    try testing.expectEqual(@as(usize, 0), (try ls.tokens(a, s, l.state, null, .{ .skip = 3 })).len);
+    try testing.expectEqual(@as(usize, 0), (try ls.tokens(a, s, l.state, null, null, .{ .skip = 3 })).len);
 
     // Rejected: gone from the list.
     try l.rejected(t, mine);
-    try testing.expectEqual(@as(usize, 2), (try ls.tokens(a, s, l.state, null, .{})).len);
+    try testing.expectEqual(@as(usize, 2), (try ls.tokens(a, s, l.state, null, null, .{})).len);
 
     // The route: 200 JSON, no null iconUrl, the `state` cache class; 400 on a bad query.
     const req: Value = .{ .map = &.{ .{ .key = "method", .value = text("GET") }, .{ .key = "query", .value = text("limit=1") } } };
-    const r = try ls.tokensRoute(a, s, l.state, null, req);
+    const r = try ls.tokensRoute(a, s, l.state, null, null, req);
     try testing.expectEqual(@as(u64, 200), r.getUint("status").?);
     const parsed = try std.json.parseFromSliceLeaky(std.json.Value, a, r.getBytes("body").?, .{});
     try testing.expectEqual(@as(usize, 1), parsed.array.items.len);
@@ -1507,7 +1507,7 @@ test "tokens: every deploy tm_color admitted, its id `<txid>_<vout>`, topic, sym
     if (o.get("iconUrl")) |ic| try testing.expect(ic == .string);
     try testing.expectEqualStrings("public, max-age=5", r.get("headers").?.getText("cache-control").?);
     const bad: Value = .{ .map = &.{.{ .key = "body", .value = .{ .bytes = "{\"limit\":0}" } }} };
-    try testing.expectEqual(@as(u64, 400), (try ls.tokensRoute(a, s, l.state, null, bad)).getUint("status").?);
+    try testing.expectEqual(@as(u64, 400), (try ls.tokensRoute(a, s, l.state, null, null, bad)).getUint("status").?);
 
     // Called as a read route's filter (shruggr/skein#143, the input's `filter: true`): {answer: <the http answer>}.
     try testing.expect(ls.isFilter(.{ .map = &.{.{ .key = "filter", .value = .{ .boolean = true } }} }));
@@ -1562,7 +1562,7 @@ test "token reads (0.14.0): ?ids= one row per id in order; /<token>, /<token>/ic
 
     // ?ids=: one row per id, in the query's order, repeats kept; an id not listed {tokenId, listed: false}.
     const q: Value = .{ .map = &.{.{ .key = "query", .value = text(try std.fmt.allocPrint(a, "ids={s},{s},{s},{s}", .{ id_none, id_web, id_mine, id_ord })) }} };
-    const r = try ls.tokensRoute(a, s, l.state, chain, q);
+    const r = try ls.tokensRoute(a, s, l.state, chain, null, q);
     try testing.expectEqual(@as(u64, 200), r.getUint("status").?);
     try testing.expectEqualStrings("public, max-age=5", r.get("headers").?.getText("cache-control").?);
     const rows = (try std.json.parseFromSliceLeaky(std.json.Value, a, r.getBytes("body").?, .{})).array.items;
@@ -1579,10 +1579,10 @@ test "token reads (0.14.0): ?ids= one row per id in order; /<token>, /<token>/ic
     try testing.expectEqualStrings(id_ord, rows[3].object.get("tokenId").?.string);
     try testing.expect(rows[3].object.get("iconUrl") == null);
     const bad: Value = .{ .map = &.{.{ .key = "query", .value = text("ids=x") }} };
-    try testing.expectEqual(@as(u64, 400), (try ls.tokensRoute(a, s, l.state, chain, bad)).getUint("status").?);
+    try testing.expectEqual(@as(u64, 400), (try ls.tokensRoute(a, s, l.state, chain, null, bad)).getUint("status").?);
 
     // /<token>: the detail, JSON, `state`.
-    const d = try ls.tokenRoute(a, s, l.state, chain, tokenReq(a, id_mine));
+    const d = try ls.tokenRoute(a, s, l.state, chain, null, tokenReq(a, id_mine));
     try testing.expectEqual(@as(u64, 200), d.getUint("status").?);
     try testing.expectEqualStrings("application/json", d.getText("type").?);
     try testing.expectEqualStrings("public, max-age=5", d.get("headers").?.getText("cache-control").?);
@@ -1595,21 +1595,21 @@ test "token reads (0.14.0): ?ids= one row per id in order; /<token>, /<token>/ic
     try testing.expect(dj.get("icon") == null);
 
     // /<token>/icon: the bytes, the deploy's media type; unproven → `state`.
-    const ic = try ls.tokenRoute(a, s, l.state, chain, tokenReq(a, try std.fmt.allocPrint(a, "{s}/icon", .{id_mine})));
+    const ic = try ls.tokenRoute(a, s, l.state, chain, null, tokenReq(a, try std.fmt.allocPrint(a, "{s}/icon", .{id_mine})));
     try testing.expectEqual(@as(u64, 200), ic.getUint("status").?);
     try testing.expectEqualStrings("image/png", ic.getText("type").?);
     try testing.expectEqualSlices(u8, &.{ 1, 2, 3 }, ic.getBytes("body").?);
     try testing.expectEqualStrings("public, max-age=5", ic.get("headers").?.getText("cache-control").?);
 
     // /<token>/deploy: the deploy's Atomic BEEF from the chain state, octet-stream; unproven → `state`.
-    const dp = try ls.tokenRoute(a, s, l.state, chain, tokenReq(a, try std.fmt.allocPrint(a, "{s}/deploy", .{id_mine})));
+    const dp = try ls.tokenRoute(a, s, l.state, chain, null, tokenReq(a, try std.fmt.allocPrint(a, "{s}/deploy", .{id_mine})));
     try testing.expectEqual(@as(u64, 200), dp.getUint("status").?);
     try testing.expectEqualStrings("application/octet-stream", dp.getText("type").?);
     try testing.expectEqualStrings("public, max-age=5", dp.get("headers").?.getText("cache-control").?);
     try testing.expectEqualSlices(u8, (try ch.beefOf(w.beef.txidOf(mine))).?, dp.getBytes("body").?);
 
     // A BRC-161 JSON deploy: its detail, no /icon (404); its deploy not held by the chain state: 404.
-    const wd = (try std.json.parseFromSliceLeaky(std.json.Value, a, (try ls.tokenRoute(a, s, l.state, chain, tokenReq(a, id_web))).getBytes("body").?, .{})).object;
+    const wd = (try std.json.parseFromSliceLeaky(std.json.Value, a, (try ls.tokenRoute(a, s, l.state, chain, null, tokenReq(a, id_web))).getBytes("body").?, .{})).object;
     try testing.expectEqualStrings("https://example.com/w.png", wd.get("iconUrl").?.string);
     for ([_][]const u8{
         try std.fmt.allocPrint(a, "{s}/icon", .{id_web}),   try std.fmt.allocPrint(a, "{s}/icon", .{id_ord}),
@@ -1618,16 +1618,233 @@ test "token reads (0.14.0): ?ids= one row per id in order; /<token>, /<token>/ic
         try std.fmt.allocPrint(a, "{s}/", .{id_mine}),      "",
         "color/tokens",                                     try std.fmt.allocPrint(a, "{s}.0", .{w.header.toHex(w.beef.txidOf(mine))}),
     }) |rest| {
-        const x = try ls.tokenRoute(a, s, l.state, chain, tokenReq(a, rest));
+        const x = try ls.tokenRoute(a, s, l.state, chain, null, tokenReq(a, rest));
         try testing.expectEqual(@as(u64, 404), x.getUint("status").?);
         try testing.expect(x.get("headers") == null);
     }
     // A route not under the row's address: 404.
     const off: Value = .{ .map = &.{ .{ .key = "route", .value = text(try std.fmt.allocPrint(a, "/other/{s}", .{id_mine})) }, .{ .key = "match", .value = tokenReq(a, "").get("match").? } } };
-    try testing.expectEqual(@as(u64, 404), (try ls.tokenRoute(a, s, l.state, chain, off)).getUint("status").?);
+    try testing.expectEqual(@as(u64, 404), (try ls.tokenRoute(a, s, l.state, chain, null, off)).getUint("status").?);
+    // 0.15.0 (D5): the rows carry the deploy's supply (`amount`) and its block `height` where the
+    // overlay has the deploy placed under tm_color (its state's `placed`), null while unmined.
+    const maps = try w.store.Maps.create(a, s);
+    var placed = maps.map(null);
+    var at7: [44]u8 = .{0} ** 44;
+    std.mem.writeInt(u32, at7[0..4], 7, .big);
+    try placed.put(try w.store.nameKey(a, names.deploys_topic, &.{&w.beef.txidOf(mine)}), .{ .bytes = &at7 });
+    try placed.flush();
+    const overlay = try s.putValue(a, .{ .map = try a.dupe(w.cbor.Entry, &.{
+        .{ .key = "kind", .value = .{ .text = "overlay-state" } },
+        .{ .key = "maps", .value = .{ .map = try a.dupe(w.cbor.Entry, &.{.{ .key = "placed", .value = .{ .cid = placed.root.? } }}) } },
+    }) });
+    const q2: Value = .{ .map = &.{.{ .key = "query", .value = text(try std.fmt.allocPrint(a, "ids={s},{s}", .{ id_mine, id_web })) }} };
+    const rows2 = (try std.json.parseFromSliceLeaky(std.json.Value, a, (try ls.tokensRoute(a, s, l.state, chain, overlay, q2)).getBytes("body").?, .{})).array.items;
+    try testing.expectEqual(@as(i64, 1000), rows2[0].object.get("amount").?.integer);
+    try testing.expectEqual(@as(i64, 7), rows2[0].object.get("height").?.integer);
+    try testing.expectEqual(@as(i64, 5), rows2[1].object.get("amount").?.integer);
+    try testing.expect(rows2[1].object.get("height").? == .null); // present, null: unmined
+    const list2 = (try std.json.parseFromSliceLeaky(std.json.Value, a, (try ls.tokensRoute(a, s, l.state, chain, overlay, .{ .map = &.{} })).getBytes("body").?, .{})).array.items;
+    for (list2) |row| try testing.expect(row.object.get("amount") != null and row.object.get("height") != null);
+    const d2 = (try std.json.parseFromSliceLeaky(std.json.Value, a, (try ls.tokenRoute(a, s, l.state, chain, overlay, tokenReq(a, id_mine))).getBytes("body").?, .{})).object;
+    try testing.expectEqual(@as(i64, 1000), d2.get("amount").?.integer);
+    try testing.expectEqual(@as(i64, 7), d2.get("height").?.integer);
+    // No overlay state: height null.
+    try testing.expect(dj.get("height").? == .null);
+    try testing.expectEqual(@as(i64, 1000), dj.get("amount").?.integer);
+    // An authority-only deploy (amount 0): amount 0.
+    const auth = rawTx(a, 0x24, &.{tokenScript(a, null, 0, null)});
+    try l.admitted(t, auth, &.{0});
+    const ad = (try std.json.parseFromSliceLeaky(std.json.Value, a, (try ls.tokenRoute(a, s, l.state, chain, overlay, tokenReq(a, idString(a, w.beef.txidOf(auth), 0)))).getBytes("body").?, .{})).object;
+    try testing.expectEqual(@as(i64, 0), ad.get("amount").?.integer);
+
     // Rejected: gone.
     try l.rejected(t, mine);
-    try testing.expectEqual(@as(u64, 404), (try ls.tokenRoute(a, s, l.state, chain, tokenReq(a, id_mine))).getUint("status").?);
+    try testing.expectEqual(@as(u64, 404), (try ls.tokenRoute(a, s, l.state, chain, null, tokenReq(a, id_mine))).getUint("status").?);
+}
+
+// --- the balance table (0.15.0, D4) ---
+
+const Prev = struct { txid: [32]u8, vout: u32 };
+
+/// A transaction spending `ins`, with outputs `outs` (each one sat, scripts under 253 bytes).
+fn rawSpend(a: std.mem.Allocator, ins: []const Prev, outs: []const []const u8) []u8 {
+    var b: std.ArrayList(u8) = .empty;
+    b.appendSlice(a, &.{ 1, 0, 0, 0, @intCast(ins.len) }) catch @panic("OOM");
+    for (ins) |in| {
+        b.appendSlice(a, &in.txid) catch @panic("OOM");
+        var v: [4]u8 = undefined;
+        std.mem.writeInt(u32, &v, in.vout, .little);
+        b.appendSlice(a, &v) catch @panic("OOM");
+        b.appendSlice(a, &.{ 0, 0xff, 0xff, 0xff, 0xff }) catch @panic("OOM");
+    }
+    b.append(a, @intCast(outs.len)) catch @panic("OOM");
+    for (outs) |o| {
+        b.appendSlice(a, &.{ 1, 0, 0, 0, 0, 0, 0, 0 }) catch @panic("OOM");
+        b.append(a, @intCast(o.len)) catch @panic("OOM");
+        b.appendSlice(a, o) catch @panic("OOM");
+    }
+    b.appendSlice(a, &.{ 0, 0, 0, 0 }) catch @panic("OOM");
+    return b.items;
+}
+
+fn lockOf(pkh: u8) [25]u8 {
+    return [_]u8{ 0x76, 0xa9, 0x14 } ++ [_]u8{pkh} ** 20 ++ [_]u8{ 0x88, 0xac };
+}
+
+/// A value output of token id_a: `amount` under `lock`.
+fn valueOut(a: std.mem.Allocator, amount: u64, lock: []const u8) []u8 {
+    var buf: [10]u8 = undefined;
+    return cat(a, &.{ &.{0x20}, &id_a, brc162.pushAmount(&buf, amount), &.{0x6d}, lock });
+}
+
+fn balanceOf(a: std.mem.Allocator, l: *Ls, pkh: u8) !?u64 {
+    var svc = try lookup.Service.loadIndex(a, l.s, ls.service_name, ls.index_name, ls.spec.maps, l.state);
+    const v = (try svc.map("balances").get(cat(a, &.{ &ls_tok_a, &([_]u8{pkh} ** 20) }))) orelse return null;
+    return std.mem.readInt(u64, v.bytes[0..8], .big);
+}
+
+/// id_a's key in the lookup's maps (txid display order ‖ vout BE).
+const ls_tok_a: [36]u8 = .{0xa5} ** 32 ++ .{ 0, 0, 0, 0 };
+
+fn holdersOf(a: std.mem.Allocator, l: *Ls, network: w.chain.Network, limit: u64, skip: u64) !struct { count: u64, rows: []const ls.Holder } {
+    var svc = try lookup.Service.loadIndex(a, l.s, ls.service_name, ls.index_name, ls.spec.maps, l.state);
+    const h = try ls.holdersOf(a, &svc, &ls_tok_a, network, .{ .limit = limit, .skip = skip });
+    return .{ .count = h.count, .rows = h.rows };
+}
+
+test "balances (0.15.0): P2PKH value outputs credit their address as they enter the unspent values and debit it as they leave (spent, rejected); re-keyed by balance; a zero balance leaves both maps; a pool or other contract output is not counted; JSON transfers count" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ms = w.store.MemStore.init(testing.allocator);
+    defer ms.deinit();
+    var l: Ls = .{ .a = a, .s = ms.store() };
+    var buf: [names.max_topic_len]u8 = undefined;
+    const tname = try a.dupe(u8, names.topicName(&buf, .{ .txid = id_a }));
+    const A: u8 = 0x0a;
+    const B: u8 = 0x0b;
+    const C: u8 = 0x33; // the JSON transfer's (test.zig's p2pkh_lock)
+    const D: u8 = 0x0d;
+    // A contract's lock (not P2PKH): a value output under it counts for nobody.
+    const pool_lock = [_]u8{ 0x51, 0x76, 0xa9, 0x14 } ++ [_]u8{0x0e} ** 20 ++ [_]u8{ 0x88, 0xac };
+
+    const t1 = rawSpend(a, &.{.{ .txid = .{0x01} ** 32, .vout = 0 }}, &.{
+        valueOut(a, 500, &lockOf(A)), valueOut(a, 300, &lockOf(B)), valueOut(a, 200, &lockOf(A)),
+        valueOut(a, 1000, &pool_lock), jsonOp(a, "transfer", id_a, 0, 50),
+    });
+    const t1id = w.beef.txidOf(t1);
+    try l.admitted(tname, t1, &.{ 0, 1, 2, 3, 4 });
+    try testing.expectEqual(@as(u64, 700), (try balanceOf(a, &l, A)).?);
+    try testing.expectEqual(@as(u64, 300), (try balanceOf(a, &l, B)).?);
+    try testing.expectEqual(@as(u64, 50), (try balanceOf(a, &l, C)).?);
+    try testing.expect((try balanceOf(a, &l, 0x0e)) == null);
+    var h = try holdersOf(a, &l, .main, 100, 0);
+    try testing.expectEqual(@as(u64, 3), h.count);
+    try testing.expectEqual(@as(usize, 3), h.rows.len);
+    try testing.expectEqual(@as(u64, 700), h.rows[0].balance);
+    try testing.expectEqualStrings(try ls.addressOf(a, .main, .{A} ** 20), h.rows[0].address);
+    try testing.expectEqual(@as(u64, 300), h.rows[1].balance);
+    try testing.expectEqual(@as(u64, 50), h.rows[2].balance);
+    // A dupe admission credits nothing more.
+    try l.admitted(tname, t1, &.{ 0, 1, 2, 3, 4 });
+    try testing.expectEqual(@as(u64, 700), (try balanceOf(a, &l, A)).?);
+
+    // t2 spends A's 500: 100 to B, 400 to D. A 200, B 400, D 400 (re-keyed: B before A now).
+    const t2 = rawSpend(a, &.{.{ .txid = t1id, .vout = 0 }}, &.{ valueOut(a, 100, &lockOf(B)), valueOut(a, 400, &lockOf(D)) });
+    try l.admitted(tname, t2, &.{ 0, 1 });
+    try l.spent(tname, t1, 0, t2);
+    try testing.expectEqual(@as(u64, 200), (try balanceOf(a, &l, A)).?);
+    try testing.expectEqual(@as(u64, 400), (try balanceOf(a, &l, B)).?);
+    try testing.expectEqual(@as(u64, 400), (try balanceOf(a, &l, D)).?);
+    h = try holdersOf(a, &l, .main, 100, 0);
+    try testing.expectEqual(@as(u64, 4), h.count);
+    try testing.expectEqual(@as(usize, 4), h.rows.len);
+    try testing.expectEqual(@as(u64, 400), h.rows[0].balance);
+    try testing.expectEqual(@as(u64, 400), h.rows[1].balance);
+    try testing.expectEqual(@as(u64, 200), h.rows[2].balance);
+    try testing.expectEqualStrings(try ls.addressOf(a, .main, .{A} ** 20), h.rows[2].address);
+    try testing.expectEqual(@as(u64, 50), h.rows[3].balance);
+    var svc = try lookup.Service.loadIndex(a, l.s, ls.service_name, ls.index_name, ls.spec.maps, l.state);
+    try testing.expectEqual(@as(usize, 4), try svc.map("byBalance").count()); // one key per address: the old ones gone
+
+    // A's 200 spent into the contract: A's balance is zero, gone from both maps.
+    const t3 = rawSpend(a, &.{.{ .txid = t1id, .vout = 2 }}, &.{valueOut(a, 200, &pool_lock)});
+    try l.admitted(tname, t3, &.{0});
+    try l.spent(tname, t1, 2, t3);
+    try testing.expect((try balanceOf(a, &l, A)) == null);
+    h = try holdersOf(a, &l, .main, 100, 0);
+    try testing.expectEqual(@as(u64, 3), h.count);
+    for (h.rows) |r| try testing.expect(!std.mem.eql(u8, r.address, try ls.addressOf(a, .main, .{A} ** 20)));
+    svc = try lookup.Service.loadIndex(a, l.s, ls.service_name, ls.index_name, ls.spec.maps, l.state);
+    try testing.expectEqual(@as(usize, 3), try svc.map("byBalance").count());
+
+    // t2 rejected: its outputs debited (B back to 300, D gone), A's 500 given back.
+    try l.rejected(tname, t2);
+    try testing.expectEqual(@as(u64, 500), (try balanceOf(a, &l, A)).?);
+    try testing.expectEqual(@as(u64, 300), (try balanceOf(a, &l, B)).?);
+    try testing.expect((try balanceOf(a, &l, D)) == null);
+    h = try holdersOf(a, &l, .main, 100, 0);
+    try testing.expectEqual(@as(u64, 3), h.count);
+    try testing.expectEqual(@as(u64, 500), h.rows[0].balance);
+    // t1 rejected too: nothing left.
+    try l.rejected(tname, t3);
+    try l.rejected(tname, t1);
+    h = try holdersOf(a, &l, .main, 100, 0);
+    try testing.expectEqual(@as(u64, 0), h.count);
+    try testing.expectEqual(@as(usize, 0), h.rows.len);
+}
+
+test "holders (0.15.0): /<token>/holders largest first, limit and skip, the count; addresses on the chain state's network; a query out of shape 400" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ms = w.store.MemStore.init(testing.allocator);
+    defer ms.deinit();
+    const s = ms.store();
+    var l: Ls = .{ .a = a, .s = s };
+    var buf: [names.max_topic_len]u8 = undefined;
+    const tname = try a.dupe(u8, names.topicName(&buf, .{ .txid = id_a }));
+    var outs: [5][]const u8 = undefined;
+    for (&outs, 0..) |*o, i| o.* = valueOut(a, 100 * (i + 1), &lockOf(@intCast(0x40 + i)));
+    try l.admitted(tname, rawSpend(a, &.{.{ .txid = .{0x02} ** 32, .vout = 0 }}, &outs), &.{ 0, 1, 2, 3, 4 });
+    const id = idString(a, id_a, 0);
+    const req = struct {
+        fn f(al: std.mem.Allocator, rest: []const u8, query: []const u8) Value {
+            const base = tokenReq(al, rest);
+            return .{ .map = std.mem.concat(al, w.cbor.Entry, &.{ base.map, &.{.{ .key = "query", .value = text(query) }} }) catch @panic("OOM") };
+        }
+    }.f;
+    const hpath = try std.fmt.allocPrint(a, "{s}/holders", .{id});
+    // The chain state on testnet: testnet addresses.
+    var ch = try lookup.Chain.load(a, s, null, .@"test");
+    const chain = try ch.save();
+
+    const r = try ls.tokenRoute(a, s, l.state, chain, null, req(a, hpath, "limit=2&skip=1"));
+    try testing.expectEqual(@as(u64, 200), r.getUint("status").?);
+    try testing.expectEqualStrings("public, max-age=5", r.get("headers").?.getText("cache-control").?);
+    const j = (try std.json.parseFromSliceLeaky(std.json.Value, a, r.getBytes("body").?, .{})).object;
+    try testing.expectEqual(@as(i64, 5), j.get("count").?.integer);
+    const rows = j.get("rows").?.array.items;
+    try testing.expectEqual(@as(usize, 2), rows.len);
+    try testing.expectEqual(@as(i64, 400), rows[0].object.get("balance").?.integer);
+    try testing.expectEqual(@as(i64, 300), rows[1].object.get("balance").?.integer);
+    try testing.expectEqualStrings(try ls.addressOf(a, .@"test", .{0x43} ** 20), rows[0].object.get("address").?.string);
+    try testing.expect(rows[0].object.get("address").?.string[0] == 'm' or rows[0].object.get("address").?.string[0] == 'n');
+    // No query: up to 100, largest first; past the end: none.
+    const every = (try std.json.parseFromSliceLeaky(std.json.Value, a, (try ls.tokenRoute(a, s, l.state, chain, null, req(a, hpath, ""))).getBytes("body").?, .{})).object;
+    try testing.expectEqual(@as(usize, 5), every.get("rows").?.array.items.len);
+    try testing.expectEqual(@as(i64, 500), every.get("rows").?.array.items[0].object.get("balance").?.integer);
+    const none = (try std.json.parseFromSliceLeaky(std.json.Value, a, (try ls.tokenRoute(a, s, l.state, chain, null, req(a, hpath, "skip=5"))).getBytes("body").?, .{})).object;
+    try testing.expectEqual(@as(usize, 0), none.get("rows").?.array.items.len);
+    try testing.expectEqual(@as(i64, 5), none.get("count").?.integer);
+    // No chain state: main.
+    const main_rows = (try std.json.parseFromSliceLeaky(std.json.Value, a, (try ls.tokenRoute(a, s, l.state, null, null, req(a, hpath, "limit=1"))).getBytes("body").?, .{})).object.get("rows").?.array.items;
+    try testing.expectEqual(@as(u8, '1'), main_rows[0].object.get("address").?.string[0]);
+    // A token with no holders here: count 0 (no deploy needed on the token's own instance).
+    const other = (try std.json.parseFromSliceLeaky(std.json.Value, a, (try ls.tokenRoute(a, s, l.state, chain, null, req(a, try std.fmt.allocPrint(a, "{s}/holders", .{idString(a, .{0x77} ** 32, 0)}), ""))).getBytes("body").?, .{})).object;
+    try testing.expectEqual(@as(i64, 0), other.get("count").?.integer);
+    for ([_][]const u8{ "limit=0", "limit=101", "skip=100001", "x=1", "limit=a" }) |bad|
+        try testing.expectEqual(@as(u64, 400), (try ls.tokenRoute(a, s, l.state, chain, null, req(a, hpath, bad))).getUint("status").?);
 }
 
 test "the manifest (shruggr/skein#143): routes, filters and roles; no dispatch, reads or senders" {
@@ -1865,7 +2082,7 @@ test "one index for the program's names (skein-overlay 0.11.0): a hook under any
     try expectOps(&.{opName(a, deploy, 0)}, try ask207(&l, ls.service_name, null, try q207(a, "color-admission", .{ .uint = 1 }, id, "tm_color", &.{dot0})));
     try expectOps(&.{opName(a, deploy, 0)}, try ask207(&l, lname, null, try q207(a, "color-admission", .{ .uint = 1 }, id, tname, &.{dot0})));
     // The token list reads the same index.
-    try testing.expectEqual(@as(usize, 1), (try ls.tokens(a, ms.store(), l.state, null, .{})).len);
+    try testing.expectEqual(@as(usize, 1), (try ls.tokens(a, ms.store(), l.state, null, null, .{})).len);
 }
 
 test "undecided (0.13.0, skein-overlay 0.19.0): a transfer whose token sources cannot be read fails MissingParents naming every source it lacks; with them read it is decided; a deploy and a funding-only transaction never want" {
