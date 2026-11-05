@@ -103,8 +103,8 @@ present, in this order, answers:
 
 | query | answer |
 |---|---|
-| `{authoritiesTokenId, limit?, skip?}` | the token's unspent authority outputs, its deploy among them, in outpoint order |
-| `{tokenId, limit?, skip?}` | the token's unspent value outputs, in outpoint order |
+| `{authoritiesTokenId, limit?, skip?}` | the token's unspent authority outputs, an authority-only deploy among them, in outpoint order |
+| `{tokenId, limit?, skip?}` | the token's unspent value outputs, a deploy that carries the supply among them, in outpoint order |
 | `{txid, outputIndex}` | the value or authority output at that outpoint, if unspent |
 
 - A token id is taken as `<txid>`, `<txid>_<vout>` or `<txid>.<vout>`
@@ -132,8 +132,10 @@ lookup hooks the engine calls in the step that admits or rejects:
 
 (token: its deploy txid in display order ‖ vout, 4 bytes big-endian; an
 outpoint the same.) `admitted` classifies each admitted output by the rules
-for the topic's token: a deploy or an authority into `authorities`, a value
-(a transfer or a mint) into `values`, a JSON `burn` into neither. `spent`
+for the topic's token, by what it holds: a value (a transfer, a mint, or a
+deploy that carries the supply) into `values`, an authority (an authority
+output, or an authority-only deploy) into `authorities`, a JSON `burn` into
+neither (0.15.1; until 0.15.0 every deploy went into `authorities`, an error). `spent`
 takes the output out of its index and records the spender. `rejected`
 removes the transaction's outputs and returns the outputs it had spent. A
 hook for a topic that is not a token's does nothing.
@@ -309,7 +311,8 @@ back by a rejection; one leaving it debits it: spent, or its transaction rejecte
 
 A value output counts when its lock is P2PKH (a 1Color output's lock after the prefix; a BRC-161
 output's script around the envelope: P2PKH on one side, nothing on the other). Pools and other
-contracts are not counted, nor a deploy's or an authority's output (not value outputs). No
+contracts are not counted, nor an authority output (it holds no value); a deploy that
+carries the supply is a value output and counts like any other (0.15.1). No
 backfill: outputs indexed before 0.15.0 are not counted (rebuild the index).
 
 ## Registering a token

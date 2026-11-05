@@ -20,8 +20,8 @@
 //! Three queries in the shapes of the ts-stack
 //! BRC-162 lookup (Deggen's, ts-stack packages/overlays/topics):
 //!
-//!   {tokenId, limit?, skip?}             the token's unspent value outputs, in outpoint order
-//!   {authoritiesTokenId, limit?, skip?}  the token's unspent authority outputs (and its deploy), in outpoint order
+//!   {tokenId, limit?, skip?}             the token's unspent value outputs (a supply-holding deploy among them), in outpoint order
+//!   {authoritiesTokenId, limit?, skip?}  the token's unspent authority outputs (an authority-only deploy among them), in outpoint order
 //!   {txid, outputIndex}                  the value or authority output at that outpoint, if unspent
 //!
 //! The first of `authoritiesTokenId`, `tokenId` present answers; else the
@@ -39,16 +39,17 @@
 //! `op` = an outpoint's txid in display order ‖ vout, u32 BE, so key order is
 //! outpoint order: txid hex, then index):
 //!
-//!   values       tok ‖ op → null                 unspent value outputs
-//!   authorities  tok ‖ op → null                 unspent authority outputs and deploys
+//!   values       tok ‖ op → null                 unspent value outputs (and supply-holding deploys)
+//!   authorities  tok ‖ op → null                 unspent authority outputs (and authority-only deploys)
 //!   outputs      op → kind (0 value, 1 authority) ‖ tok [‖ spending txid, internal order]
 //!   admitted     tok ‖ op → null                 every output the token's topic validly admitted
 //!                                                (BRC-207: kept once spent, dropped on rejection)
 //!
 //! `admitted` classifies each admitted output by the BSV-21 rules for the
-//! topic's token (bsv21.zig `tokenOf`): a deploy or an authority goes in
-//! `authorities`, a value (transfer or mint) in `values`, a BRC-161 burn in
-//! neither. `spent` takes the output out of its index and records its
+//! topic's token (bsv21.zig `tokenOf`) by what it holds: a value (transfer, mint,
+//! or a deploy that carries the supply) goes in `values`, an authority (an authority
+//! output, or an authority-only deploy) in `authorities`, a BRC-161 burn in neither
+//! (0.15.1: until 0.15.0 every deploy was filed as an authority, an error). `spent` takes the output out of its index and records its
 //! spender; `rejected` drops the transaction's outputs and gives back the
 //! ones it had spent. A hook for a topic that is not a token's does nothing.
 //!
@@ -160,8 +161,10 @@ fn cat(a: Allocator, parts: []const []const u8) ![]u8 {
 fn kindOf(a: Allocator, id: bsv21.TokenId, tx: lookup.Tx, vout: u32) !?Kind {
     if (vout >= tx.tx.outputs.len) return error.BadArgs;
     const t = (try bsv21.tokenOf(a, id, tx.txid, vout, tx.tx.outputs[vout].locking_script.bytes)) orelse return null;
+    // By what it holds (0.15.1): a deploy carrying the supply is a value output, an authority-only one an authority.
     return switch (t.role) {
-        .deploy, .authority => .authority,
+        .deploy => if (t.authority or t.amount == 0) .authority else .value,
+        .authority => .authority,
         .value => .value,
         .burn => null,
     };
@@ -180,7 +183,8 @@ fn p2pkhOf(lock: []const u8) ?[20]u8 {
 /// and nothing on the other); null for any other output.
 pub fn holdingOf(a: Allocator, id: bsv21.TokenId, txid: [32]u8, vout: u32, script: []const u8) !?struct { pkh: [20]u8, amount: u64 } {
     const t = (try bsv21.tokenOf(a, id, txid, vout, script)) orelse return null;
-    if (t.role != .value or t.amount == 0) return null;
+    // A value output as `kindOf` files it (0.15.1: a supply-holding deploy is one).
+    if (t.amount == 0 or t.authority or !(t.role == .value or t.role == .deploy)) return null;
     const pkh = switch (t.form) {
         .binary => p2pkhOf(t.binary.?.lock),
         .json => blk: {
@@ -535,8 +539,9 @@ pub fn documentation(_: Allocator, service: []const u8) anyerror![]const u8 {
     \\The first key present, in this order, answers:
     \\
     \\- `{ authoritiesTokenId, limit?, skip? }`: the token's unspent authority outputs
-    \\  (its deploy among them), in outpoint order.
-    \\- `{ tokenId, limit?, skip? }`: the token's unspent value outputs, in outpoint order.
+    \\  (an authority-only deploy among them), in outpoint order.
+    \\- `{ tokenId, limit?, skip? }`: the token's unspent value outputs (a deploy that carries
+    \\  the supply among them), in outpoint order.
     \\- `{ txid, outputIndex }`: the value or authority output at that outpoint, if unspent.
     \\- Over the discovery topic, BRC-207's query with `topic: "tm_color"` (a deploy's outpoint is
     \\  its token id): `{ type: "color-admission" | "color-spendability", version: 1, assetId:

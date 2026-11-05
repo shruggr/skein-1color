@@ -4,6 +4,18 @@ Released versions of skein-1color (skein-mandala until 0.9.2). Versions
 before 0.10.0 are in the git history (each release commit names what
 changed).
 
+## 0.15.1 (2026-11-05)
+
+A fix (David Case, 2026-11-05). `color-lookup` filed every output the BSV-21 rules mark as a deploy
+as an authority, a supply-holding deploy (BRC-162 deploy with an amount, BRC-161 `deploy+mint`)
+included: an error. An output is filed by what it holds: a deploy that carries the supply is a
+VALUE output (in `values`, answered by `{tokenId}`, moved by its spend and by rejections like any
+value output, and so in the balance table with no special case); an authority-only deploy (amount
+0, BRC-161 `deploy+auth`) stays an authority (`{authoritiesTokenId}`). The `deploys` registry over
+`tm_color`, the `outputs` and `admitted` maps and BRC-207's `color-admission` /
+`color-spendability` answers are unchanged. An index built before 0.15.1 keeps its deploys under
+`authorities` until rebuilt. `bin/color-lookup.wasm` rebuilt; manifest 0.15.1. zig 40.
+
 ## 0.15.0 (2026-11-05)
 
 Holders and the discovery row's supply and height (agent-env plans/history-api-build-2026-11-05.md
