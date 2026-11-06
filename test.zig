@@ -2237,3 +2237,128 @@ test "deploys by what they hold (0.15.1): a supply deploy is a value output — 
     // Both on discovery's list as before.
     try testing.expectEqual(@as(usize, 2), (try ls.tokens(a, s, l.state, null, null, .{})).len);
 }
+
+/// A binary deploy whose payload is `{"sym": sym}` (DAG-CBOR), seeded `seed`.
+fn symDeploy(a: std.mem.Allocator, seed: u8, sym: []const u8) []u8 {
+    const payload = std.mem.concat(a, u8, &.{ &.{ 0xa1, 0x63, 's', 'y', 'm', @as(u8, 0x60) + @as(u8, @intCast(sym.len)) }, sym }) catch @panic("OOM");
+    return rawTx(a, seed, &.{ tokenScript(a, null, 1000, pushOf(a, payload)), &p2pkh_lock });
+}
+
+fn idsOf(a: std.mem.Allocator, list: []const ls.Listed) []const []const u8 {
+    const out = a.alloc([]const u8, list.len) catch @panic("OOM");
+    for (list, out) |x, *o| o.* = x.tokenId;
+    return out;
+}
+
+fn expectIds(want: []const []const u8, got: []const ls.Listed) !void {
+    try testing.expectEqual(want.len, got.len);
+    for (want, got) |x, y| try testing.expectEqualStrings(x, y.tokenId);
+}
+
+test "tokens q and after (0.16.0): symbol starts-with (ASCII case-insensitive) or token id starts-with, the same rows in the same order; after = the rows strictly after a token; refusals" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ms = w.store.MemStore.init(testing.allocator);
+    defer ms.deinit();
+    const s = ms.store();
+    const f = try Fixtures.init(a);
+    var l: Ls = .{ .a = a, .s = s };
+    const t = names.deploys_topic;
+
+    const da = symDeploy(a, 0x11, "AB");
+    const db = symDeploy(a, 0x12, "abc");
+    const dc = symDeploy(a, 0x13, "Xyz");
+    const dd = symDeploy(a, 0x14, "b");
+    for ([_][]const u8{ da, db, dc, dd }) |raw| try l.admitted(t, raw, &.{0});
+    try l.admitted(t, f.raws.get("token_deploy").?, &.{0}); // no symbol: no row
+    try l.admitted(t, f.raws.get("legacy_deploy1").?, &.{1}); // a BRC-161 JSON deploy's sym
+
+    const full = try ls.tokens(a, s, l.state, null, null, .{});
+    try testing.expectEqual(@as(usize, 6), full.len);
+    const idA = try std.fmt.allocPrint(a, "{s}_0", .{&w.header.toHex(w.beef.txidOf(da))});
+    const idB = try std.fmt.allocPrint(a, "{s}_0", .{&w.header.toHex(w.beef.txidOf(db))});
+
+    // q against the plain list filtered by the rule, in its order.
+    const legacy_sym = blk: {
+        for (full) |x| if (x.vout == 1) break :blk x.sym;
+        unreachable;
+    };
+    var qs: std.ArrayList([]const u8) = .empty;
+    try qs.appendSlice(a, &.{ "a", "A", "ab", "AB", "abc", "abcd", "x", "XY", "b", "zz", "_", " ", legacy_sym, idA[0..1], idA[0..2], idA[0..3], idA[0..63], idA[0..64], idA[0..65], idA, try std.fmt.allocPrint(a, "{s}1", .{idA}), idB[0..5] });
+    if (legacy_sym.len > 1) try qs.append(a, try std.ascii.allocUpperString(a, legacy_sym[0..1]));
+    for (qs.items) |q| {
+        const lower = try std.ascii.allocLowerString(a, q);
+        var want: std.ArrayList([]const u8) = .empty;
+        for (full) |x| {
+            const sl = try std.ascii.allocLowerString(a, x.sym);
+            if ((x.sym.len > 0 and std.mem.startsWith(u8, sl, lower)) or std.mem.startsWith(u8, x.tokenId, q)) try want.append(a, x.tokenId);
+        }
+        try expectIds(want.items, try ls.tokens(a, s, l.state, null, null, .{ .q = q }));
+    }
+    // "a": AB and abc at least; "" is no filter.
+    const qa = idsOf(a, try ls.tokens(a, s, l.state, null, null, .{ .q = "a" }));
+    var seen: u8 = 0;
+    for (qa) |x| {
+        if (std.mem.eql(u8, x, idA)) seen |= 1;
+        if (std.mem.eql(u8, x, idB)) seen |= 2;
+    }
+    try testing.expectEqual(@as(u8, 3), seen);
+    try expectIds(idsOf(a, full), try ls.tokens(a, s, l.state, null, null, .{ .q = "" }));
+    // Both sides find it (a symbol that is its own id's first hex digit): listed once.
+    const twice = blk: {
+        var seed: u8 = 0x20;
+        while (seed < 0xff) : (seed += 1) for ("0123456789abcdef") |ch| {
+            const raw = symDeploy(a, seed, &.{ch});
+            if (w.header.toHex(w.beef.txidOf(raw))[0] == ch) break :blk raw;
+        };
+        unreachable;
+    };
+    var ms2 = w.store.MemStore.init(testing.allocator);
+    defer ms2.deinit();
+    var l2: Ls = .{ .a = a, .s = ms2.store() };
+    try l2.admitted(t, twice, &.{0});
+    const q1 = w.header.toHex(w.beef.txidOf(twice))[0..1];
+    try testing.expectEqual(@as(usize, 2), (try ls.searched(a, @constCast(&try lookup.Service.loadIndex(a, ms2.store(), ls.service_name, ls.index_name, ls.spec.maps, l2.state)), q1)).len);
+    try testing.expectEqual(@as(usize, 1), (try ls.tokens(a, ms2.store(), l2.state, null, null, .{ .q = q1 })).len);
+
+    // after: strictly after that token in the list's order, with and without q; limit as ever.
+    for (full, 0..) |x, i| {
+        try expectIds(idsOf(a, full[i + 1 ..]), try ls.tokens(a, s, l.state, null, null, .{ .after = x.tokenId }));
+        const page = try ls.tokens(a, s, l.state, null, null, .{ .after = x.tokenId, .limit = 1 });
+        try testing.expectEqual(@min(@as(usize, 1), full.len - i - 1), page.len);
+        const qa_after = try ls.tokens(a, s, l.state, null, null, .{ .q = "a", .after = x.tokenId });
+        const qa_full = try ls.tokens(a, s, l.state, null, null, .{ .q = "a" });
+        var want: std.ArrayList([]const u8) = .empty;
+        for (qa_full) |y| for (full[i + 1 ..]) |z| if (std.mem.eql(u8, y.tokenId, z.tokenId)) try want.append(a, y.tokenId);
+        try expectIds(want.items, qa_after);
+    }
+    // An after not on the list.
+    try testing.expectError(error.UnknownAfter, ls.tokens(a, s, l.state, null, null, .{ .after = "ee" ** 32 ++ "_0" }));
+    const unknown: Value = .{ .map = &.{.{ .key = "query", .value = text("after=" ++ "ee" ** 32 ++ "_0") }} };
+    try testing.expectEqual(@as(u64, 400), (try ls.tokensRoute(a, s, l.state, null, null, unknown)).getUint("status").?);
+    const ok: Value = .{ .map = &.{.{ .key = "query", .value = .{ .text = try std.fmt.allocPrint(a, "q=ab&after={s}&limit=2", .{full[0].tokenId}) } }} };
+    try testing.expectEqual(@as(u64, 200), (try ls.tokensRoute(a, s, l.state, null, null, ok)).getUint("status").?);
+
+    // A rejected deploy's symbol row goes with it.
+    try l.rejected(t, da);
+    for (try ls.tokens(a, s, l.state, null, null, .{ .q = "ab" })) |x| try testing.expect(!std.mem.eql(u8, x.tokenId, idA));
+    try testing.expectError(error.UnknownAfter, ls.tokens(a, s, l.state, null, null, .{ .after = idA }));
+
+    // The query string: q percent-decoded, `+` a space; after exactly `<txid>_<vout>`.
+    try testing.expectEqualStrings("a b", (try ls.parseTokensQuery(a, "q=a+b", "")).q.?);
+    try testing.expectEqualStrings("a,b", (try ls.parseTokensQuery(a, "q=a%2Cb", "")).q.?);
+    try testing.expectEqualStrings("", (try ls.parseTokensQuery(a, "q=", "")).q.?);
+    const t1 = "ab" ** 32 ++ "_0";
+    const both = try ls.parseTokensQuery(a, "q=x&after=" ++ t1 ++ "&limit=5", "");
+    try testing.expectEqualStrings(t1, both.after.?);
+    try testing.expectEqual(@as(u64, 5), both.limit);
+    _ = try ls.parseTokensQuery(a, "q=x&skip=3", ""); // q beside skip is fine
+    for ([_][2][]const u8{
+        .{ "after=" ++ t1 ++ "&skip=1", "" }, .{ "after=" ++ t1, "{\"skip\":0}" }, .{ "ids=" ++ t1 ++ "&q=a", "" },
+        .{ "ids=" ++ t1 ++ "&after=" ++ t1, "" }, .{ "q=a&q=b", "" },        .{ "after=" ++ t1 ++ "&after=" ++ t1, "" },
+        .{ "after=" ++ "ab" ** 32, "" },          .{ "after=x", "" },              .{ "q=" ++ "a" ** 101, "" },
+        .{ "q=%zz", "" },                         .{ "", "{\"q\":\"a\"}" },
+    }) |cse| try testing.expectError(error.BadQuery, ls.parseTokensQuery(a, cse[0], cse[1]));
+    _ = try ls.parseTokensQuery(a, "q=" ++ "a" ** 100, "");
+}

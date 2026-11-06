@@ -70,9 +70,13 @@
 //! The discovery topic `tm_color` feeds (by the topic, as every hook) the map
 //!
 //!   deploys      tok → null                       every admitted deploy (a token id is its deploy outpoint)
+//!   symbols      lower(sym) ‖ tok → null          the deploy's symbol, ASCII lower-cased, then its token key
+//!                                                (0.16.0: the token list's `q`; a deploy without a symbol has
+//!                                                no row; written by `admitted`, removed by `rejected`; no
+//!                                                backfill: a deploy admitted before 0.16.0 has none)
 //!
-//! `admitted` adds each valid deploy output (token.zig `deployOf`), `spent`
-//! does nothing (a registry), `rejected` removes the transaction's deploys;
+//! `admitted` adds each valid deploy output (token.zig `deployOf`) and its symbol row, `spent`
+//! does nothing (a registry), `rejected` removes the transaction's deploys and their symbol rows;
 //! under `ls_color` BRC-207's query with `topic: "tm_color"` and the token's
 //! `assetId` answers, of the queried outpoints, the asset's deploy if the
 //! topic admitted it (`color-admission`: spent or not, a registry;
@@ -113,7 +117,7 @@ pub const index_name = service_name;
 const deploys_topic = color.name.deploys_topic;
 
 pub const spec: lookup.Spec = .{
-    .maps = &.{ "values", "authorities", "outputs", "deploys", "admitted", "balances", "byBalance", "holders" },
+    .maps = &.{ "values", "authorities", "outputs", "deploys", "admitted", "balances", "byBalance", "holders", "symbols" },
     .index = index_name,
     .answer = answer,
     .admitted = admitted,
@@ -242,6 +246,26 @@ fn heldMoved(a: Allocator, svc: *Service, id: bsv21.TokenId, txid: [32]u8, vout:
     try holdingMoved(a, svc, id, txid, t, vout, credit);
 }
 
+// ---------------------------------------------------------------- the symbol index (0.16.0)
+
+/// A deploy's display symbol from its output (a binary deploy's payload `sym`, a BRC-161 JSON
+/// deploy's `sym`), "" when it carries none; null when the output is no deploy of `id`.
+pub fn symOfDeploy(a: Allocator, id: bsv21.TokenId, txid: [32]u8, vout: u32, script: []const u8) !?[]const u8 {
+    const t = (try bsv21.tokenOf(a, id, txid, vout, script)) orelse return null;
+    if (t.role != .deploy) return null;
+    return switch (t.form) {
+        .binary => color.brc162.metadataOf(t.binary.?.payload orelse "").sym orelse "",
+        .json => t.json.?.sym orelse "",
+    };
+}
+
+/// The `symbols` row of a deploy: its symbol ASCII lower-cased ‖ its token key; null when it has no symbol.
+fn symbolKey(a: Allocator, id: bsv21.TokenId, txid: [32]u8, vout: u32, script: []const u8) !?[]const u8 {
+    const sym = (try symOfDeploy(a, id, txid, vout, script)) orelse return null;
+    if (sym.len == 0) return null;
+    return try cat(a, &.{ try std.ascii.allocLowerString(a, sym), &tokKey(id) });
+}
+
 // The hooks come once per admitted transaction and topic, under whichever of the program's names
 // listens first (skein-overlay 0.11.0): they go by the topic, never by the name.
 
@@ -251,6 +275,7 @@ fn admitted(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx, outpu
             if (vout >= tx.tx.outputs.len) return error.BadArgs;
             const id = (try token.deployOf(a, tx.txid, vout, tx.tx.outputs[vout].locking_script.bytes)) orelse continue;
             try svc.map("deploys").add(&tokKey(id));
+            if (try symbolKey(a, id, tx.txid, vout, tx.tx.outputs[vout].locking_script.bytes)) |k| try svc.map("symbols").add(k);
         }
         return;
     }
@@ -294,6 +319,7 @@ fn rejected(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx) anyer
         for (tx.tx.outputs, 0..) |o, vout| {
             const id = (try token.deployOf(a, tx.txid, @intCast(vout), o.locking_script.bytes)) orelse continue;
             _ = try svc.map("deploys").remove(&tokKey(id));
+            if (try symbolKey(a, id, tx.txid, @intCast(vout), o.locking_script.bytes)) |k| _ = try svc.map("symbols").remove(k);
         }
         return;
     }
@@ -552,6 +578,14 @@ pub fn documentation(_: Allocator, service: []const u8) anyerror![]const u8 {
     \\else is refused. Outpoint order is the txid in display order, then the output index.
     \\Answers are output-lists, each output with its transaction's BEEF.
     \\
+    \\## The token list (a read, not a query)
+    \\
+    \\`GET /<app>/tokens` lists every deploy `tm_color` admitted, newest first by the chain
+    \\(`limit`, `skip`, or `ids`). 0.16.0: `q=<text>` keeps the tokens whose symbol starts with
+    \\it (ASCII case-insensitive) or whose token id starts with it, in the same order; `after=
+    \\<txid>_<vout>` the rows strictly after that token (400 when the list does not hold it, or
+    \\beside `skip`).
+    \\
     ;
 }
 
@@ -559,8 +593,22 @@ pub fn documentation(_: Allocator, service: []const u8) anyerror![]const u8 {
 
 /// The token list's query: `{limit?, skip?}` from the query string or a JSON body (both: the body's
 /// win), or `ids` (the query string only, comma-separated token ids `<txid>_<vout>`; 0.14.0), which
-/// takes neither `limit` nor `skip`.
-pub const TokensQuery = struct { limit: u64 = max_limit, skip: u64 = 0, ids: ?[]const []const u8 = null, paged: bool = false };
+/// takes neither `limit` nor `skip`. 0.16.0, the query string only: `q` (a search: the tokens whose
+/// symbol starts with it, ASCII case-insensitively, or whose token id starts with it; "" no filter;
+/// at most `max_q` bytes) and `after` (a token id `<txid>_<vout>`: the rows strictly after it in the
+/// list's order), neither beside `ids`, `after` not beside `skip`.
+pub const TokensQuery = struct {
+    limit: u64 = max_limit,
+    skip: u64 = 0,
+    ids: ?[]const []const u8 = null,
+    paged: bool = false,
+    q: ?[]const u8 = null,
+    after: ?[]const u8 = null,
+    skipped: bool = false,
+};
+
+/// The longest `q` the list takes (0.16.0).
+pub const max_q = 100;
 
 fn tokensField(q: *TokensQuery, key: []const u8, v: u64) !void {
     if (eql(u8, key, "limit")) {
@@ -569,6 +617,7 @@ fn tokensField(q: *TokensQuery, key: []const u8, v: u64) !void {
     } else if (eql(u8, key, "skip")) {
         if (v > max_skip) return error.BadQuery;
         q.skip = v;
+        q.skipped = true;
     } else return error.BadQuery;
     q.paged = true;
 }
@@ -611,6 +660,23 @@ pub fn parseTokensQuery(a: Allocator, query: []const u8, body: []const u8) !Toke
             q.ids = ids.items;
             continue;
         }
+        if (eql(u8, kv[0..i], "q")) {
+            if (q.q != null) return error.BadQuery;
+            // `URLSearchParams` writes a space as `+`.
+            const raw = try a.dupe(u8, kv[i + 1 ..]);
+            std.mem.replaceScalar(u8, raw, '+', ' ');
+            const t = try percentDecoded(a, raw);
+            if (t.len > max_q) return error.BadQuery;
+            q.q = t;
+            continue;
+        }
+        if (eql(u8, kv[0..i], "after")) {
+            if (q.after != null) return error.BadQuery;
+            const t = try percentDecoded(a, kv[i + 1 ..]);
+            if (tokenKeyOf(t) == null) return error.BadQuery;
+            q.after = t;
+            continue;
+        }
         const v = std.fmt.parseInt(u64, kv[i + 1 ..], 10) catch return error.BadQuery;
         try tokensField(&q, kv[0..i], v);
     }
@@ -624,7 +690,8 @@ pub fn parseTokensQuery(a: Allocator, query: []const u8, body: []const u8) !Toke
             try tokensField(&q, e.key_ptr.*, @intCast(v.integer));
         }
     }
-    if (q.ids != null and q.paged) return error.BadQuery;
+    if (q.ids != null and (q.paged or q.q != null or q.after != null)) return error.BadQuery;
+    if (q.after != null and q.skipped) return error.BadQuery;
     return q;
 }
 
@@ -826,22 +893,36 @@ fn restrictedName(n: []const u8) bool {
 /// map `deploys` of the program's index, its state record `deploys_state`), newest first by the
 /// chain state (`chain_state`; unmined first, then by block height and position, highest first),
 /// `skip` then `limit` of them. Reads only. (The `ids` form is `byIds`.)
+///
+/// 0.16.0: a non-empty `q` lists only the tokens `searched` finds (the same rows, in the same order);
+/// `after` only the rows strictly after that token in the order (its own place read from the chain
+/// state by its key, never by walking the list), error.UnknownAfter when the discovery topic admitted
+/// no such deploy.
 pub fn tokens(a: Allocator, s: c.store.Store, deploys_state: ?[]const u8, chain_state: ?[]const u8, overlay_state: ?[]const u8, q: TokensQuery) ![]const Listed {
     var svc = try Service.loadIndex(a, s, service_name, index_name, spec.maps, deploys_state);
     var placed = try Placed.load(a, s, overlay_state);
     // The chain app's state through the SDK's one opener (shruggr/skein-sdk#1): its record's network, else main.
     var ch = try c.open(a, s, chain_state, .main);
-    const all = try svc.map("deploys").prefixed(&.{});
-    const ages = try a.alloc(Age, all.len);
-    for (all, ages) |kv, *x| {
-        if (kv.key.len != 36) return error.BadIndex;
-        x.* = try ageOf(&ch, kv.key);
+    const after: ?Age = if (q.after) |t| blk: {
+        const key = try a.dupe(u8, &(tokenKeyOf(t) orelse return error.BadQuery));
+        if (!(try svc.map("deploys").has(key))) return error.UnknownAfter;
+        break :blk try ageOf(&ch, key);
+    } else null;
+    const keys: []const []const u8 = if (q.q) |text| (if (text.len > 0) try searched(a, &svc, text) else try allDeploys(a, &svc)) else try allDeploys(a, &svc);
+    var ages: std.ArrayList(Age) = .empty;
+    for (keys) |k| {
+        if (k.len != 36) return error.BadIndex;
+        const x = try ageOf(&ch, k);
+        if (after) |af| if (!newerFirst({}, af, x)) continue;
+        try ages.append(a, x);
     }
-    std.mem.sort(Age, ages, {}, newerFirst);
+    std.mem.sort(Age, ages.items, {}, newerFirst);
     var out: std.ArrayList(Listed) = .empty;
     var skipped: u64 = 0;
-    for (ages) |x| {
+    for (ages.items, 0..) |x, i| {
         if (out.items.len >= q.limit) break;
+        // A token both sides of `q` found is listed once.
+        if (i > 0 and eql(u8, ages.items[i - 1].key, x.key)) continue;
         const l = (try listedOf(a, s, x.key, &placed)) orelse continue;
         if (skipped < q.skip) {
             skipped += 1;
@@ -850,6 +931,68 @@ pub fn tokens(a: Allocator, s: c.store.Store, deploys_state: ?[]const u8, chain_
         try out.append(a, l);
     }
     return out.items;
+}
+
+fn allDeploys(a: Allocator, svc: *Service) ![]const []const u8 {
+    const all = try svc.map("deploys").prefixed(&.{});
+    const keys = try a.alloc([]const u8, all.len);
+    for (all, keys) |kv, *k| k.* = kv.key;
+    return keys;
+}
+
+/// The token keys `q` finds (0.16.0), possibly one twice: the `symbols` rows under `q` lower-cased
+/// whose symbol starts with it, and the `deploys` keys whose token id text `<txid>_<vout>` starts
+/// with `q` — read by the key range its leading lower-case hex digits span (up to 64), never every
+/// token.
+pub fn searched(a: Allocator, svc: *Service, q: []const u8) ![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    const lower = try std.ascii.allocLowerString(a, q);
+    for (try svc.map("symbols").prefixed(lower)) |kv| {
+        if (kv.key.len <= 36) return error.BadIndex;
+        const sym = kv.key[0 .. kv.key.len - 36];
+        if (std.mem.startsWith(u8, sym, lower)) try out.append(a, kv.key[kv.key.len - 36 ..]);
+    }
+    // The id side: the txid's hex digits `q` begins with, as a range of deploy keys.
+    const n = @min(q.len, 64);
+    for (q[0..n]) |ch| if (!(std.ascii.isDigit(ch) or (ch >= 'a' and ch <= 'f'))) return out.items;
+    var lo: [33]u8 = undefined;
+    _ = std.fmt.hexToBytes(lo[0 .. n / 2], q[0 .. n / 2 * 2]) catch return out.items;
+    var len = n / 2;
+    if (n % 2 == 1) {
+        lo[len] = (std.fmt.charToDigit(q[n - 1], 16) catch unreachable) << 4;
+        len += 1;
+    }
+    const m = svc.map("deploys");
+    var hb: [33]u8 = undefined;
+    const hi = upper(&hb, lo[0..len], n % 2 == 1);
+    const rows = if (hi) |h| try m.range(lo[0..len], h) else try m.from(lo[0..len]);
+    for (rows) |kv| {
+        if (kv.key.len != 36) return error.BadIndex;
+        const text = try std.fmt.allocPrint(a, "{s}_{d}", .{ &std.fmt.bytesToHex(kv.key[0..32].*, .lower), std.mem.readInt(u32, kv.key[32..36], .big) });
+        if (std.mem.startsWith(u8, text, q)) try out.append(a, kv.key);
+    }
+    return out.items;
+}
+
+/// The first key past every key `lo` begins (`nibble`: its last byte's low nibble free); null: none.
+fn upper(buf: []u8, lo: []const u8, nibble: bool) ?[]const u8 {
+    var n = lo.len;
+    @memcpy(buf[0..n], lo);
+    if (nibble) {
+        if (buf[n - 1] < 0xf0) {
+            buf[n - 1] += 0x10;
+            return buf[0..n];
+        }
+        n -= 1;
+    }
+    while (n > 0) {
+        if (buf[n - 1] != 0xff) {
+            buf[n - 1] += 1;
+            return buf[0..n];
+        }
+        n -= 1;
+    }
+    return null;
 }
 
 /// The `ids` form (0.14.0, D17): one row per id in the query's order, the token as listed when the
@@ -893,15 +1036,19 @@ fn jsonOf(a: Allocator, v: anytype) ![]const u8 {
     return w.written();
 }
 
-/// The read `/<app>/tokens` (the route handler contract, any method): `{limit?, skip?}` → 200
+/// The read `/<app>/tokens` (the route handler contract, any method): `{limit?, skip?}` (and 0.16.0's
+/// `q`, `after`; an `after` not on the list 400) → 200
 /// `[{tokenId, topic, sym, dec, iconUrl?, txid, vout}]`; `?ids=a,b` → one row per id in order,
 /// `{tokenId, listed: false}` for an id not listed; 400 `{status: "error", message}` on a bad query.
 /// `Cache-Control: public, max-age=5`. `deploys_state` is the program's index's record (the head
 /// `<app>/ls_color`), `chain_state` the head `chain/state`'s.
 pub fn tokensRoute(a: Allocator, s: c.store.Store, deploys_state: ?[]const u8, chain_state: ?[]const u8, overlay_state: ?[]const u8, req: Value) !Value {
     const q = parseTokensQuery(a, req.getText("query") orelse "", req.getBytes("body") orelse "") catch
-        return respond(a, 400, "{\"status\":\"error\",\"message\":\"the query is {limit?: 1..100, skip?: 0..100000}, in the query string or a JSON body, or ids=<txid>_<vout>,… in the query string\"}");
-    const body = if (q.ids) |ids| try jsonOf(a, try byIds(a, s, deploys_state, overlay_state, ids)) else try jsonOf(a, try tokens(a, s, deploys_state, chain_state, overlay_state, q));
+        return respond(a, 400, "{\"status\":\"error\",\"message\":\"the query is {limit?: 1..100, skip?: 0..100000}, in the query string or a JSON body, with q=<text> (at most 100 bytes) and after=<txid>_<vout> (not beside skip) in the query string; or ids=<txid>_<vout>,… in the query string alone\"}");
+    const body = if (q.ids) |ids| try jsonOf(a, try byIds(a, s, deploys_state, overlay_state, ids)) else try jsonOf(a, tokens(a, s, deploys_state, chain_state, overlay_state, q) catch |e| switch (e) {
+        error.UnknownAfter => return respond(a, 400, "{\"status\":\"error\",\"message\":\"after: no such token on the list\"}"),
+        else => return e,
+    });
     return respondWith(a, 200, "application/json", cache_state, body);
 }
 

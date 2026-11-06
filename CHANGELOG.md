@@ -4,6 +4,27 @@ Released versions of skein-1color (skein-mandala until 0.9.2). Versions
 before 0.10.0 are in the git history (each release commit names what
 changed).
 
+## 0.16.0 (2026-11-06)
+
+The token list's search and cursor (shruggr/open-exchange#5; David, 2026-11-06: `q` is starts-with,
+indexed; `unlisted` out).
+
+- `GET /<app>/tokens?q=<text>`: the tokens whose `sym` starts with the text, ASCII
+  case-insensitively, or whose `tokenId` starts with it (lower-case hex), the same rows in the same
+  order as the plain list; `q=` no filter; at most 100 bytes, percent-decoded, `+` a space. Never a
+  read of every token: the symbol side reads a new map of the index, `symbols` (lower-cased `sym` ‖
+  token key → nothing), written by `admitted` beside `deploys` and removed by `rejected` with it; the
+  id side reads `deploys` by the key range of the text's leading hex digits.
+- `after=<txid>_<vout>`: the rows strictly after that token in the list's order (newest first by
+  the chain), with or without `q`, `limit` as ever; its place read from the chain state by its key.
+  An `after` the list does not hold is a 400; `after` beside `skip` a 400; `q` / `after` beside
+  `ids` a 400. The answer is the plain array, as before.
+- No backfill: a deploy admitted before 0.16.0 has no `symbols` row (found by its id, not its
+  symbol); resubmitting its BEEF does not add one (the engine skips the hooks for an applied
+  transaction).
+- `bin/color-lookup.wasm` rebuilt; `bin/color-topic.wasm` and `bin/overlay.wasm` the same bytes.
+  `etc/app.json`: version 0.16.0. zig 41.
+
 ## 0.15.3 (2026-11-05)
 
 Engine 0.20.4: a re-pin only. No change in behaviour; the programs' code, the manifest's rows, the

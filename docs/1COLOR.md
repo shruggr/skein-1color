@@ -235,6 +235,27 @@ runs as the route's filter over the current state and answers `{answer:
   exactly `<txid>_<vout>` (lower-case hex, the vout with no leading zero),
   a comma or `%2C` between them; not beside `limit` / `skip`. Any id out of
   shape is a 400.
+- **Search and cursor** (0.16.0, shruggr/open-exchange#5; the query string
+  only): `q=<text>` lists the tokens whose `sym` STARTS WITH the text, ASCII
+  case-insensitively, or whose `tokenId` starts with it (as written,
+  lower-case hex): the same rows in the same order as the plain list; an
+  empty `q` is no filter; at most 100 bytes, percent-decoded, `+` a space.
+  `after=<txid>_<vout>` lists the rows strictly after that token in the
+  list's order (with or without `q`), `limit` as ever; a token the list
+  does not hold is a 400; `after` beside `skip` is a 400. Neither goes
+  beside `ids`. The answer stays the plain array (no `next`: the cursor is
+  the last row's `tokenId`).
+
+  `q` never reads every token: the symbol side reads the map `symbols`
+  (the deploy's `sym` ASCII lower-cased ‖ its token key → nothing),
+  written by `admitted` beside `deploys` and removed by `rejected` with
+  it, by the prefix; the id side reads `deploys` by the key range the
+  text's leading hex digits span. No backfill: a deploy admitted before
+  0.16.0 has no `symbols` row (it is found by its id, not by its symbol).
+  A resubmit of its BEEF does not write one: the engine calls the hooks
+  only for a judgement it records, and an applied transaction is a dupe.
+  `after`'s place is read from the chain state by its key (its height and
+  position), never by walking the list.
 - **Answer**: 200 (`Cache-Control: public, max-age=5`), a JSON array, one entry per deploy the discovery topic
   `tm_color` admitted (the map `deploys` of the program's index,
   `<app>/ls_color`; nothing when the topic is not registered):

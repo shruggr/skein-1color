@@ -4,7 +4,7 @@ The 1Color token (BRC-162; BRC-207) overlay components for a
 [skein](https://github.com/shruggr/skein): a topic manager and a lookup
 service, as programs an overlay app carries in its tree, and the token
 library they are built on, as a Zig package, and two pages an app that
-carries the components serves. Version **0.15.3**.
+carries the components serves. Version **0.16.0**.
 
 0.10.0 is the 1Color rename, on BRC-207's wire names
 (David Case, 2026-10-15, shruggr/skein#120): the repo `skein-1color`, the
@@ -58,7 +58,7 @@ everywhere (CHANGELOG.md).
 
   | route | answer |
   |---|---|
-  | `GET /<app>/tokens?limit=&skip=` / `?ids=a,b` | the token list (JSON), `Cache-Control: public, max-age=5` |
+  | `GET /<app>/tokens?limit=&skip=` / `?q=&after=&limit=` / `?ids=a,b` | the token list (JSON), `Cache-Control: public, max-age=5`; (0.16.0) `q` = symbol (ASCII case-insensitive) or token id STARTS WITH, `after=<txid>_<vout>` = the rows after that token (400 unknown, 400 beside `skip`) |
   | `GET /<app>/<txid>_<vout>` | `{tokenId, topic, sym, dec, txid, vout, iconUrl?}`, `public, max-age=5` |
   | `GET /<app>/<txid>_<vout>/icon` | the embedded icon (its media type); `public, max-age=31536000, immutable` when the deploy is proven, else `public, max-age=5`; 404 without one |
   | `GET /<app>/<txid>_<vout>/deploy` | the deploy's Atomic BEEF, `application/octet-stream`; the same cache rule |
@@ -228,6 +228,8 @@ skein routes add --transport http --filters 1color.lookup /lookup <origin>
 ```
 GET <base>/tokens?limit=20&skip=0
 → [{"tokenId": "<txid>_0", "topic": "tm_color_<txid>_0", "sym": "GOLD", "dec": 8, "iconUrl": "<txid>_0/icon", "txid": "<txid>", "vout": 0}, …]
+GET <base>/tokens?q=go&limit=20          (0.16.0: sym or tokenId starting with "go")
+GET <base>/tokens?q=go&after=<txid>_0    (the next page: the rows after the last one)
 GET <base>/tokens?ids=<txid>_0,<other>_0
 → [{"tokenId": "<txid>_0", …}, {"tokenId": "<other>_0", "listed": false}]
 GET <base>/<txid>_0/icon     → the image bytes (Content-Type its media type)
