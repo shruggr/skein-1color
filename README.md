@@ -4,7 +4,7 @@ The 1Color token (BRC-162; BRC-207) overlay components for a
 [skein](https://github.com/shruggr/skein): a topic manager and a lookup
 service, as programs an overlay app carries in its tree, and the token
 library they are built on, as a Zig package, and two pages an app that
-carries the components serves. Version **0.16.0**.
+carries the components serves. Version **0.16.1**.
 
 0.10.0 is the 1Color rename, on BRC-207's wire names
 (David Case, 2026-10-15, shruggr/skein#120): the repo `skein-1color`, the
