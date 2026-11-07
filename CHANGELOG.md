@@ -4,6 +4,16 @@ Released versions of skein-1color (skein-mandala until 0.9.2). Versions
 before 0.10.0 are in the git history (each release commit names what
 changed).
 
+## 0.17.1 (2026-11-07)
+
+Engine 0.22.0: a re-pin only (agent-env plans/data-model-cleanup-2026-11-07.md). The programs' code,
+the manifest's rows, the pages and `www/` are unchanged.
+
+- Engine: skein-overlay v0.21.1 → v0.22.0 (anchors kept only at heights with a mined transaction; the
+  admittance record without `script` and `satoshis`, which nothing here read); `bin/overlay.wasm` the
+  tag's committed engine; `bin/color-lookup.wasm` and `bin/color-topic.wasm` the same bytes.
+- `etc/app.json`: version 0.17.1. zig 42.
+
 ## 0.17.0 (2026-11-07)
 
 The counters (agent-env plans/read-optimizations-2026-11-07.md D5). Engine skein-overlay v0.21.1.
