@@ -1960,8 +1960,15 @@ test "the manifest (shruggr/skein#143): routes, filters and roles; no dispatch, 
     try testing.expect(j.get("dispatch") == null and j.get("reads") == null);
     const gated = j.get("roles").?.object.get("root").?.array.items;
     // No `market` / `validator` (skein-overlay 0.12.0: every skein is both, always; no switch).
-    try testing.expectEqual(@as(usize, 3), gated.len);
-    for ([_][]const u8{ "register", "registerLookup", "deregisterLookup" }, gated) |x, g| try testing.expectEqualStrings(x, g.string);
+    // 0.17.2 (skein-overlay 0.23.0): `reindex`, root's, in its own box; the lookup's record version.
+    try testing.expectEqual(@as(usize, 4), gated.len);
+    for ([_][]const u8{ "register", "registerLookup", "deregisterLookup", "reindex" }, gated) |x, g| try testing.expectEqualStrings(x, g.string);
+    try testing.expectEqual(@as(i64, 1), j.get("lookupVersion").?.integer);
+    var reindex_row = false;
+    for (j.get("routes").?.array.items) |r| {
+        if (std.mem.eql(u8, r.object.get("address").?.string, "reindex")) reindex_row = std.mem.eql(u8, r.object.get("handler").?.string, "overlay.reindex");
+    }
+    try testing.expect(reindex_row);
     try testing.expectEqualStrings("color-lookup.tokens", j.get("filters").?.object.get("tokens").?.string);
     try testing.expectEqualStrings("color-lookup.token", j.get("filters").?.object.get("token").?.string);
     var tokens_read = false;

@@ -4,6 +4,22 @@ Released versions of skein-1color (skein-mandala until 0.9.2). Versions
 before 0.10.0 are in the git history (each release commit names what
 changed).
 
+## 0.17.2 (2026-11-07)
+
+Reindex (agent-env plans/reindex-2026-11-07.md). Engine skein-overlay v0.23.0.
+
+- Engine: skein-overlay v0.22.0 → v0.23.0 (root's `{fn: "reindex", args: {service}}` in the box
+  `<app>/reindex`: a lookup's index derived again from its topics' admitted history in place, one
+  transaction per step, the index's head switched in the last); `bin/overlay.wasm` the tag's committed
+  engine; `bin/color-lookup.wasm` rebuilt (the lookup contract's fn `reindex` and the hooks' `reindex:
+  true`; its hooks write only through their `Service` and read no head, so they re-run into a fresh index
+  unchanged); `bin/color-topic.wasm` the same bytes.
+- `etc/app.json`: version 0.17.2; `lookupVersion: 1` (the version of `color-lookup`'s record shape, raised
+  when a release changes it: a host reindexes on a greater one); the route `{address: "reindex", handler:
+  "overlay.reindex"}` and `reindex` under `roles.root`. zig 42.
+- Re-running the hooks stamps what they stamp with the step's time (`now`: a burn row's `at`) with the
+  reindex's step, not the admission's.
+
 ## 0.17.1 (2026-11-07)
 
 Engine 0.22.0: a re-pin only (agent-env plans/data-model-cleanup-2026-11-07.md). The programs' code,
