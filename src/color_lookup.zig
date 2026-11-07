@@ -209,8 +209,8 @@ fn filedOf(a: Allocator, id: bsv21.TokenId, txid: [32]u8, t: c.bsvz.transaction.
 
 // ---------------------------------------------------------------- the counters (0.17.0)
 
-/// The time of the step whose hook this call runs in (ms): the in-VM call input's `now` (skein
-/// docs/VM.md, "call"; replay-exact), set by `run` before the hook; a burn row's `at`.
+/// The time a hook's transaction was admitted (ms; 0.17.3: the hook argument's `at`, skein-overlay
+/// 0.23.1), set by `run` before the hook; a burn row's `at`.
 pub var now_ms: u64 = 0;
 
 /// A token's counters (the record under `counters`).
@@ -1363,11 +1363,17 @@ fn appOfRead(a: Allocator, s: c.store.Store, req: Value) ![]const u8 {
 const sk = @import("overlay_sk");
 var delegate = false;
 
+fn isHook(func: []const u8) bool {
+    return eql(u8, func, "admitted") or eql(u8, func, "spent") or eql(u8, func, "rejected");
+}
+
 fn run(a: Allocator) anyerror!void {
     const in = try sk.input(a);
     const func = in.getText("fn") orelse "";
-    // 0.17.0: the step's time for the hooks (a burn row's `at`).
-    now_ms = in.getUint("now") orelse 0;
+    // The time for the hooks (a burn row's `at`): 0.17.3, the hook argument's `at` — the time its
+    // transaction was admitted (skein-overlay 0.23.1), so a reindex re-applies the same time; any
+    // other call, the step's.
+    now_ms = if (isHook(func)) lookup.atOf(try sk.callArg(a, in)) orelse return error.BadArgs else in.getUint("now") orelse 0;
     const route = if (eql(u8, func, "tokens")) &tokensRoute else if (eql(u8, func, "token")) &tokenRoute else {
         delegate = true;
         return;

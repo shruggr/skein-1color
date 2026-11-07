@@ -1,13 +1,13 @@
 .{
     .name = .skein_1color,
-    .version = "0.17.2",
+    .version = "0.17.3",
     .minimum_zig_version = "0.16.0",
     .fingerprint = 0xe3543cf7525b39fc,
     .dependencies = .{
         // The topic and lookup contracts; the SDK (chain, app, sk, cbor) comes through it.
         .skein_overlay = .{
-            .url = "https://github.com/shruggr/skein-overlay/archive/refs/tags/v0.23.0.tar.gz",
-            .hash = "skein_overlay-0.23.0-IMuNgelRJgBVdQ8E_2DvYfc7gr9-DJUsaFcttgFPDkqC",
+            .url = "https://github.com/shruggr/skein-overlay/archive/2963e02ae659566c289f493e90ccd70a69342d65.tar.gz",
+            .hash = "skein_overlay-0.23.1-IMuNgb0UJgBrGDxffi7GZWE4-v7rSB0n59qVDkjtHe7P",
         },
     },
     .paths = .{

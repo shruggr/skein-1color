@@ -4,6 +4,18 @@ Released versions of skein-1color (skein-mandala until 0.9.2). Versions
 before 0.10.0 are in the git history (each release commit names what
 changed).
 
+## 0.17.3 (2026-11-07, branch, not released)
+
+The reindex re-cut (agent-env plans/reindex-2026-11-07.md "RE-CUT"). Engine skein-overlay 0.23.1
+(branch `reindex-recut`, 2963e02; pinned by commit until it is tagged).
+
+- Engine: one index head; the walk calls the hooks exactly as admission does (no `reindex: true`, no fn
+  `reindex`); `bin/overlay.wasm` the branch's committed engine; `bin/color-lookup.wasm` rebuilt on the
+  0.23.1 lookup contract.
+- `color-lookup`: a hook's time (a burn row's `at`) is the hook argument's `at`, the time its
+  transaction was admitted (skein-overlay 0.23.1), not the step's `now`: a reindex gives every burn row
+  the time admission gave it. `lookupVersion` stays 1 (the record shape is unchanged). zig 42.
+
 ## 0.17.2 (2026-11-07)
 
 Reindex (agent-env plans/reindex-2026-11-07.md). Engine skein-overlay v0.23.0.
