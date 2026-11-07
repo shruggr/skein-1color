@@ -4,6 +4,24 @@ Released versions of skein-1color (skein-mandala until 0.9.2). Versions
 before 0.10.0 are in the git history (each release commit names what
 changed).
 
+## 0.17.0 (2026-11-07)
+
+The counters (agent-env plans/read-optimizations-2026-11-07.md D5). Engine skein-overlay v0.21.1.
+
+- `color-lookup`: maps `counters` (`tok → supply ‖ authorities ‖ burned ‖ burns`, 4 × u64 BE) and
+  `burns` (`tok ‖ txid → amount ‖ at`), written by the hooks and unwound by a rejection: the
+  circulating supply (moved as `values`: value outputs admitted minus value inputs consumed, the deploy
+  included), the unspent authority outputs, the total burned and the transactions that burned (inputs
+  carrying more of the token than the admitted outputs). A burn emits `{event: "burn", topic:
+  "ls_color_<tokenId>", tokenId, row: {kind: "burn", txid, amount, at}}`; its rejection `row: {kind:
+  "revert", …}`. The hooks read the step's time (`now`). No backfill.
+- `<token>/holders` answers `supply`, `authorities`, `burned`, `burns` beside `count` and `rows`.
+  Every other answer unchanged.
+- Engine: skein-overlay v0.21.0 → v0.21.1 (skein-sdk 0.15.0 through it); `bin/overlay.wasm` the tag's
+  committed engine (the same bytes as 0.21.0's, sha256 4616849f…); `bin/color-lookup.wasm` rebuilt
+  (sha256 4f924298…); `bin/color-topic.wasm` the same bytes.
+- `etc/app.json`: version 0.17.0. zig 42, web 42.
+
 ## 0.16.2 (2026-11-07)
 
 Engine 0.21.0: a re-pin only. The programs' code, the manifest's rows, the pages and `www/` are

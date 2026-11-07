@@ -911,6 +911,8 @@ const Ls = struct {
     s: w.store.Store,
     state: ?[]const u8 = null,
     service: []const u8 = ls.service_name,
+    /// The events the last hook asked to be emitted (0.17.0).
+    events: []const Value = &.{},
 
     fn uints(a: std.mem.Allocator, xs: []const u32) ![]Value {
         const out = try a.alloc(Value, xs.len);
@@ -929,6 +931,7 @@ const Ls = struct {
         const arg: Value = .{ .map = try std.mem.concat(self.a, w.cbor.Entry, &.{ &head, rest }) };
         const h = try lookup.handle(self.a, ls.spec, self.s, .regtest, self.state, null, func, arg);
         if (h.state) |sc| self.state = sc;
+        self.events = if (h.answer.getArray("events")) |es| es else &.{};
     }
 
     fn admitted(self: *Ls, t: []const u8, raw: []const u8, outs: []const u32) !void {
@@ -1793,6 +1796,107 @@ test "balances (0.15.0): P2PKH value outputs credit their address as they enter 
     h = try holdersOf(a, &l, .main, 100, 0);
     try testing.expectEqual(@as(u64, 0), h.count);
     try testing.expectEqual(@as(usize, 0), h.rows.len);
+}
+
+fn countersAt(a: std.mem.Allocator, l: *Ls) !ls.Counters {
+    var svc = try lookup.Service.loadIndex(a, l.s, ls.service_name, ls.index_name, ls.spec.maps, l.state);
+    return ls.countersOf(&svc, &ls_tok_a);
+}
+
+test "counters (0.17.0): supply, unspent authorities, burned at admission; a burn event; a rejection unwinds all; a dupe hook counts nothing" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ms = w.store.MemStore.init(testing.allocator);
+    defer ms.deinit();
+    var l: Ls = .{ .a = a, .s = ms.store() };
+    var buf: [names.max_topic_len]u8 = undefined;
+    const tname = try a.dupe(u8, names.topicName(&buf, .{ .txid = id_a }));
+    const A: u8 = 0x0a;
+    const B: u8 = 0x0b;
+    const pool_lock = [_]u8{ 0x51, 0x76, 0xa9, 0x14 } ++ [_]u8{0x0e} ** 20 ++ [_]u8{ 0x88, 0xac };
+    ls.now_ms = 1000;
+
+    // t1: 500 to A, 300 to B, 200 in a contract, an authority: supply 1000 (every value output), 1 authority.
+    const t1 = rawSpend(a, &.{.{ .txid = .{0x01} ** 32, .vout = 0 }}, &.{
+        valueOut(a, 500, &lockOf(A)), valueOut(a, 300, &lockOf(B)), valueOut(a, 200, &pool_lock), valueOut(a, 0, &lockOf(A)),
+    });
+    const t1id = w.beef.txidOf(t1);
+    try l.admitted(tname, t1, &.{ 0, 1, 2, 3 });
+    try testing.expectEqual(@as(usize, 0), l.events.len);
+    var n = try countersAt(a, &l);
+    try testing.expectEqual(@as(u64, 1000), n.supply);
+    try testing.expectEqual(@as(u64, 1), n.authorities);
+    try testing.expectEqual(@as(u64, 0), n.burned);
+    try l.admitted(tname, t1, &.{ 0, 1, 2, 3 }); // a dupe: nothing more
+    try testing.expectEqual(@as(u64, 1000), (try countersAt(a, &l)).supply);
+
+    // t2 spends A's 500 and the authority, outputs 350 to B: 150 burned, the authority gone.
+    ls.now_ms = 2000;
+    const t2 = rawSpend(a, &.{ .{ .txid = t1id, .vout = 0 }, .{ .txid = t1id, .vout = 3 } }, &.{valueOut(a, 350, &lockOf(B))});
+    const t2id = w.beef.txidOf(t2);
+    try l.admitted(tname, t2, &.{0});
+    try testing.expectEqual(@as(usize, 1), l.events.len);
+    const ev = l.events[0];
+    try testing.expectEqualStrings("burn", ev.getText("event").?);
+    const id = idString(a, id_a, 0);
+    try testing.expectEqualStrings(try std.fmt.allocPrint(a, "ls_color_{s}", .{id}), ev.getText("topic").?);
+    try testing.expectEqualStrings(id, ev.getText("tokenId").?);
+    const row = ev.get("row").?;
+    try testing.expectEqualStrings("burn", row.getText("kind").?);
+    try testing.expectEqualStrings(&w.header.toHex(t2id), row.getText("txid").?);
+    try testing.expectEqual(@as(u64, 150), row.getUint("amount").?);
+    try testing.expectEqual(@as(u64, 2000), row.getUint("at").?);
+    try l.spent(tname, t1, 0, t2);
+    try l.spent(tname, t1, 3, t2);
+    n = try countersAt(a, &l);
+    try testing.expectEqual(@as(u64, 1000 - 500 + 350), n.supply);
+    try testing.expectEqual(@as(u64, 0), n.authorities);
+    try testing.expectEqual(@as(u64, 150), n.burned);
+    try testing.expectEqual(@as(u64, 1), n.burns);
+    // a dupe admission after the spends: no second burn, no event
+    try l.admitted(tname, t2, &.{0});
+    try testing.expectEqual(@as(usize, 0), l.events.len);
+    try testing.expectEqual(@as(u64, 150), (try countersAt(a, &l)).burned);
+
+    // t3: B's 300 → 300 to A (a transfer, no burn).
+    const t3 = rawSpend(a, &.{.{ .txid = t1id, .vout = 1 }}, &.{valueOut(a, 300, &lockOf(A))});
+    try l.admitted(tname, t3, &.{0});
+    try l.spent(tname, t1, 1, t3);
+    try testing.expectEqual(@as(usize, 0), l.events.len);
+    try testing.expectEqual(@as(u64, 850), (try countersAt(a, &l)).supply);
+
+    // /holders carries the counters.
+    const r = try ls.tokenRoute(a, l.s, l.state, null, null, tokenReq(a, try std.fmt.allocPrint(a, "{s}/holders", .{id})));
+    const j = (try std.json.parseFromSliceLeaky(std.json.Value, a, r.getBytes("body").?, .{})).object;
+    try testing.expectEqual(@as(i64, 850), j.get("supply").?.integer);
+    try testing.expectEqual(@as(i64, 0), j.get("authorities").?.integer);
+    try testing.expectEqual(@as(i64, 150), j.get("burned").?.integer);
+    try testing.expectEqual(@as(i64, 1), j.get("burns").?.integer);
+    try testing.expectEqual(@as(i64, 2), j.get("count").?.integer);
+
+    // t2 rejected: the burn unwound (a revert event), the 350 out of supply, A's 500 and the authority back.
+    ls.now_ms = 3000;
+    try l.rejected(tname, t2);
+    try testing.expectEqual(@as(usize, 1), l.events.len);
+    try testing.expectEqualStrings("burn", l.events[0].getText("event").?);
+    try testing.expectEqualStrings("revert", l.events[0].get("row").?.getText("kind").?);
+    try testing.expectEqual(@as(u64, 150), l.events[0].get("row").?.getUint("amount").?);
+    try testing.expectEqual(@as(u64, 3000), l.events[0].get("row").?.getUint("at").?);
+    n = try countersAt(a, &l);
+    try testing.expectEqual(@as(u64, 850 - 350 + 500), n.supply);
+    try testing.expectEqual(@as(u64, 1), n.authorities);
+    try testing.expectEqual(@as(u64, 0), n.burned);
+    try testing.expectEqual(@as(u64, 0), n.burns);
+    // Everything rejected: no record left.
+    try l.rejected(tname, t3);
+    try l.rejected(tname, t1);
+    n = try countersAt(a, &l);
+    try testing.expectEqual(@as(u64, 0), n.supply);
+    try testing.expectEqual(@as(u64, 0), n.authorities);
+    var svc = try lookup.Service.loadIndex(a, l.s, ls.service_name, ls.index_name, ls.spec.maps, l.state);
+    try testing.expectEqual(@as(usize, 0), try svc.map("counters").count());
+    try testing.expectEqual(@as(usize, 0), try svc.map("burns").count());
 }
 
 test "holders (0.15.0): /<token>/holders largest first, limit and skip, the count; addresses on the chain state's network; a query out of shape 400" {

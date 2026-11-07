@@ -67,6 +67,26 @@
 //! `byBalance` re-keyed on every change; a zero balance leaves both. No backfill: outputs indexed
 //! before 0.15.0 are not counted.
 //!
+//! THE COUNTERS (0.17.0, agent-env plans/read-optimizations-2026-11-07.md D5), per token, written as
+//! the hooks move outputs and unwound by a rejection, in one plain record per token:
+//!
+//!   counters     tok → supply ‖ authorities ‖ burned ‖ burns (4 × u64 BE, 32 bytes)
+//!   burns        tok ‖ txid (internal order) → amount ‖ at (2 × u64 BE)   one row per burning transaction
+//!
+//! `supply` the circulating supply: the amounts of the token's unspent value outputs (`values`: a
+//! supply-holding deploy among them), credited as an output enters `values` (admitted, given back by a
+//! rejection) and debited as it leaves (spent, its transaction rejected) — value outputs admitted
+//! minus value inputs consumed; `authorities` the count of unspent authority outputs (`authorities`'
+//! members, moved the same way); `burned` the total burned and `burns` the transactions that burned:
+//! a transaction whose consumed value inputs (the token's, as this index filed them) carry more of the
+//! token than its admitted value outputs burns the difference — its `burns` row is written, the total
+//! credited, and a `burn` EVENT emitted (skein-overlay 0.20.4 `Service.emit`, the pool events' shape:
+//! `{event: "burn", topic: "ls_color_<tokenId>", tokenId, row: {kind: "burn", txid, amount, at}}`, `at`
+//! the step's time in ms); a rejection of it removes the row, debits the total and emits `{…, row:
+//! {kind: "revert", txid, amount, at}}`. No backfill: outputs indexed before 0.17.0 are not counted
+//! (a debit stops at zero). Read: `<token>/holders` answers `supply`, `authorities`, `burned`, `burns`
+//! beside its `count` and `rows`.
+//!
 //! The discovery topic `tm_color` feeds (by the topic, as every hook) the map
 //!
 //!   deploys      tok → null                       every admitted deploy (a token id is its deploy outpoint)
@@ -117,7 +137,7 @@ pub const index_name = service_name;
 const deploys_topic = color.name.deploys_topic;
 
 pub const spec: lookup.Spec = .{
-    .maps = &.{ "values", "authorities", "outputs", "deploys", "admitted", "balances", "byBalance", "holders", "symbols" },
+    .maps = &.{ "values", "authorities", "outputs", "deploys", "admitted", "balances", "byBalance", "holders", "symbols", "counters", "burns" },
     .index = index_name,
     .answer = answer,
     .admitted = admitted,
@@ -172,6 +192,152 @@ fn kindOf(a: Allocator, id: bsv21.TokenId, tx: lookup.Tx, vout: u32) !?Kind {
         .value => .value,
         .burn => null,
     };
+}
+
+/// The kind and amount of output `vout` of transaction `t` (txid `txid`) for token `id`, or null.
+fn filedOf(a: Allocator, id: bsv21.TokenId, txid: [32]u8, t: c.bsvz.transaction.Transaction, vout: u32) !?struct { kind: Kind, amount: u64 } {
+    if (vout >= t.outputs.len) return null;
+    const tk = (try bsv21.tokenOf(a, id, txid, vout, t.outputs[vout].locking_script.bytes)) orelse return null;
+    const k: Kind = switch (tk.role) {
+        .deploy => if (tk.authority or tk.amount == 0) .authority else .value,
+        .authority => .authority,
+        .value => .value,
+        .burn => return null,
+    };
+    return .{ .kind = k, .amount = if (k == .value) tk.amount else 0 };
+}
+
+// ---------------------------------------------------------------- the counters (0.17.0)
+
+/// The time of the step whose hook this call runs in (ms): the in-VM call input's `now` (skein
+/// docs/VM.md, "call"; replay-exact), set by `run` before the hook; a burn row's `at`.
+pub var now_ms: u64 = 0;
+
+/// A token's counters (the record under `counters`).
+pub const Counters = struct { supply: u64 = 0, authorities: u64 = 0, burned: u64 = 0, burns: u64 = 0 };
+
+pub fn countersOf(svc: *Service, tk: []const u8) !Counters {
+    const v = (try svc.map("counters").get(tk)) orelse return .{};
+    if (v != .bytes or v.bytes.len != 32) return error.BadIndex;
+    const b = v.bytes;
+    return .{
+        .supply = std.mem.readInt(u64, b[0..8], .big),
+        .authorities = std.mem.readInt(u64, b[8..16], .big),
+        .burned = std.mem.readInt(u64, b[16..24], .big),
+        .burns = std.mem.readInt(u64, b[24..32], .big),
+    };
+}
+
+fn putCounters(a: Allocator, svc: *Service, tk: []const u8, n: Counters) !void {
+    if (n.supply == 0 and n.authorities == 0 and n.burned == 0 and n.burns == 0) {
+        _ = try svc.map("counters").remove(tk);
+        return;
+    }
+    try svc.map("counters").put(tk, .{ .bytes = try cat(a, &.{ &be64(n.supply), &be64(n.authorities), &be64(n.burned), &be64(n.burns) }) });
+}
+
+/// An output of `tk` entering (`enter`) or leaving its index: `supply` by a value output's amount,
+/// `authorities` by one for an authority output.
+fn counted(a: Allocator, svc: *Service, tk: []const u8, kind: Kind, amount: u64, enter: bool) !void {
+    var n = try countersOf(svc, tk);
+    switch (kind) {
+        .value => n.supply = if (enter) std.math.add(u64, n.supply, amount) catch std.math.maxInt(u64) else n.supply -| amount,
+        .authority => n.authorities = if (enter) n.authorities + 1 else n.authorities -| 1,
+    }
+    try putCounters(a, svc, tk, n);
+}
+
+/// Output `vout` of `t` (txid `txid`) of `kind` entering or leaving its index: its holding (a value
+/// output's P2PKH address) and the counters.
+fn outputMoved(a: Allocator, svc: *Service, id: bsv21.TokenId, txid: [32]u8, t: c.bsvz.transaction.Transaction, vout: u32, kind: Kind, enter: bool) !void {
+    const f = (try filedOf(a, id, txid, t, vout)) orelse return;
+    if (kind == .value) try holdingMoved(a, svc, id, txid, t, vout, enter);
+    try counted(a, svc, &tokKey(id), kind, f.amount, enter);
+}
+
+/// The same, for an output read from the store by its txid (a spent or given-back previous coin).
+fn storedMoved(a: Allocator, svc: *Service, id: bsv21.TokenId, txid: [32]u8, vout: u32, kind: Kind, enter: bool) !void {
+    const raw = svc.store.tryGet(a, &c.store.hashCid(.tx, txid)) orelse return;
+    const t = c.bsvz.transaction.Transaction.parse(a, raw) catch return;
+    try outputMoved(a, svc, id, txid, t, vout, kind, enter);
+}
+
+/// The amount of the value output `vout` of the stored transaction `txid`, 0 when not held or not one.
+fn storedAmount(a: Allocator, id: bsv21.TokenId, s: c.store.Store, txid: [32]u8, vout: u32) !u64 {
+    const raw = s.tryGet(a, &c.store.hashCid(.tx, txid)) orelse return 0;
+    const t = c.bsvz.transaction.Transaction.parse(a, raw) catch return 0;
+    const f = (try filedOf(a, id, txid, t, vout)) orelse return 0;
+    return f.amount;
+}
+
+fn burnKey(a: Allocator, tk: []const u8, txid: [32]u8) ![]u8 {
+    return cat(a, &.{ tk, &txid });
+}
+
+/// The event name of a burn (0.17.0): one event for its kinds, `burn` and `revert`.
+pub const burn_event = "burn";
+
+/// `{event: "burn", topic: "ls_color_<tokenId>", tokenId, row: {kind, txid, amount, at}}`.
+fn emitBurn(a: Allocator, svc: *Service, id: bsv21.TokenId, kind: []const u8, txid: [32]u8, amount: u64) !void {
+    const nid: color.name.TokenId = .{ .txid = id.txid, .vout = id.vout, .kind = if (id.kind == .native) .native else .legacy };
+    var tb: [color.name.max_suffix_len]u8 = undefined;
+    var lb: [color.name.max_lookup_len]u8 = undefined;
+    const row: Value = .{ .map = try a.dupe(c.cbor.Entry, &.{
+        .{ .key = "kind", .value = .{ .text = kind } },
+        .{ .key = "txid", .value = .{ .text = try a.dupe(u8, &c.header.toHex(txid)) } },
+        .{ .key = "amount", .value = .{ .uint = amount } },
+        .{ .key = "at", .value = .{ .uint = now_ms } },
+    }) };
+    try svc.emit(.{ .map = try a.dupe(c.cbor.Entry, &.{
+        .{ .key = "event", .value = .{ .text = burn_event } },
+        .{ .key = "topic", .value = .{ .text = try a.dupe(u8, color.name.lookupName(&lb, nid)) } },
+        .{ .key = "tokenId", .value = .{ .text = try a.dupe(u8, color.name.tokenIdText(&tb, nid)) } },
+        .{ .key = "row", .value = row },
+    }) });
+}
+
+/// Whether `tx` burns token `id` (`tk`): its consumed value inputs — the token's value outputs this
+/// index filed, unspent or spent by `tx` itself (a dupe hook call) — carry more than its admitted
+/// value outputs; the difference written once (`burns`), counted and emitted.
+fn burnCheck(a: Allocator, svc: *Service, id: bsv21.TokenId, tk: []const u8, tx: lookup.Tx, outputs_to_admit: []const u32) !void {
+    var in_sum: u128 = 0;
+    for (tx.tx.inputs) |in| {
+        const v = (try svc.map("outputs").get(&opKey(in.previous_outpoint.txid.bytes, in.previous_outpoint.index))) orelse continue;
+        const e = try entryOf(v);
+        if (e.kind != .value or !eql(u8, e.tok, tk)) continue;
+        if (e.spender) |by| if (!eql(u8, by, &tx.txid)) continue;
+        in_sum += try storedAmount(a, id, svc.store, in.previous_outpoint.txid.bytes, in.previous_outpoint.index);
+    }
+    if (in_sum == 0) return;
+    var out_sum: u128 = 0;
+    for (outputs_to_admit) |vout| {
+        const f = (try filedOf(a, id, tx.txid, tx.tx, vout)) orelse continue;
+        out_sum += f.amount;
+    }
+    if (in_sum <= out_sum) return;
+    const bk = try burnKey(a, tk, tx.txid);
+    if (try svc.map("burns").has(bk)) return;
+    const amount: u64 = std.math.cast(u64, in_sum - out_sum) orelse std.math.maxInt(u64);
+    try svc.map("burns").put(bk, .{ .bytes = try cat(a, &.{ &be64(amount), &be64(now_ms) }) });
+    var n = try countersOf(svc, tk);
+    n.burned = std.math.add(u64, n.burned, amount) catch std.math.maxInt(u64);
+    n.burns += 1;
+    try putCounters(a, svc, tk, n);
+    try emitBurn(a, svc, id, "burn", tx.txid, amount);
+}
+
+/// A rejected `tx`'s burn, unwound: its row gone, the total debited, a `revert` emitted.
+fn burnUndo(a: Allocator, svc: *Service, id: bsv21.TokenId, tk: []const u8, txid: [32]u8) !void {
+    const bk = try burnKey(a, tk, txid);
+    const v = (try svc.map("burns").get(bk)) orelse return;
+    if (v != .bytes or v.bytes.len != 16) return error.BadIndex;
+    const amount = std.mem.readInt(u64, v.bytes[0..8], .big);
+    _ = try svc.map("burns").remove(bk);
+    var n = try countersOf(svc, tk);
+    n.burned -|= amount;
+    n.burns -|= 1;
+    try putCounters(a, svc, tk, n);
+    try emitBurn(a, svc, id, "revert", txid, amount);
 }
 
 // ---------------------------------------------------------------- the balance table (0.15.0)
@@ -239,12 +405,6 @@ fn holdingMoved(a: Allocator, svc: *Service, id: bsv21.TokenId, txid: [32]u8, t:
     try adjust(a, svc, &tokKey(id), h.pkh, h.amount, credit);
 }
 
-/// The same, for an output read from the store by its txid (a spent or given-back previous coin).
-fn heldMoved(a: Allocator, svc: *Service, id: bsv21.TokenId, txid: [32]u8, vout: u32, credit: bool) !void {
-    const raw = svc.store.tryGet(a, &c.store.hashCid(.tx, txid)) orelse return;
-    const t = c.bsvz.transaction.Transaction.parse(a, raw) catch return;
-    try holdingMoved(a, svc, id, txid, t, vout, credit);
-}
 
 // ---------------------------------------------------------------- the symbol index (0.16.0)
 
@@ -281,6 +441,8 @@ fn admitted(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx, outpu
     }
     const id = token.tokenIdOf(topic) orelse return;
     const tk = tokKey(id);
+    // 0.17.0: before the outputs are filed, while the inputs it consumes are still unspent here.
+    try burnCheck(a, svc, id, &tk, tx, outputs_to_admit);
     for (outputs_to_admit) |vout| {
         if (vout >= tx.tx.outputs.len) return error.BadArgs;
         try svc.map("admitted").add(try cat(a, &.{ &tk, &opKey(tx.txid, vout) }));
@@ -288,8 +450,9 @@ fn admitted(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx, outpu
         const op = opKey(tx.txid, vout);
         try svc.map("outputs").put(&op, .{ .bytes = try cat(a, &.{ &.{@intFromEnum(k)}, &tk }) });
         const ik = try cat(a, &.{ &tk, &op });
-        // 0.15.0: an output new to `values` credits its holding (a dupe hook call credits nothing).
-        if (k == .value and !(try svc.map("values").has(ik))) try holdingMoved(a, svc, id, tx.txid, tx.tx, vout, true);
+        // 0.15.0: an output new to its index credits its holding; 0.17.0: and the counters (a dupe
+        // hook call credits nothing).
+        if (!(try svc.map(indexName(k)).has(ik))) try outputMoved(a, svc, id, tx.txid, tx.tx, vout, k, true);
         try svc.map(indexName(k)).add(ik);
     }
 }
@@ -309,8 +472,8 @@ fn spent(a: Allocator, svc: *Service, topic: []const u8, outpoint: lookup.Outpoi
     const v = (try svc.map("outputs").get(&op)) orelse return; // not one it indexed
     const e = try entryOf(v);
     if (e.spender != null) return;
-    if (try svc.map(indexName(e.kind)).remove(try cat(a, &.{ e.tok, &op })) and e.kind == .value)
-        try heldMoved(a, svc, id, outpoint.txid, outpoint.vout, false);
+    if (try svc.map(indexName(e.kind)).remove(try cat(a, &.{ e.tok, &op })))
+        try storedMoved(a, svc, id, outpoint.txid, outpoint.vout, e.kind, false);
     try svc.map("outputs").put(&op, .{ .bytes = try cat(a, &.{ v.bytes, &spending.txid }) });
 }
 
@@ -324,14 +487,16 @@ fn rejected(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx) anyer
         return;
     }
     const id = token.tokenIdOf(topic) orelse return;
+    // 0.17.0: its burn, if it burned.
+    try burnUndo(a, svc, id, &tokKey(id), tx.txid);
     // Its outputs vanish: never validly admitted (BRC-207 admission).
     for (0..tx.tx.outputs.len) |vout| _ = try svc.map("admitted").remove(try cat(a, &.{ &tokKey(id), &opKey(tx.txid, @intCast(vout)) }));
     for (0..tx.tx.outputs.len) |vout| {
         const op = opKey(tx.txid, @intCast(vout));
         const v = (try svc.map("outputs").get(&op)) orelse continue;
         const e = try entryOf(v);
-        if (try svc.map(indexName(e.kind)).remove(try cat(a, &.{ e.tok, &op })) and e.kind == .value)
-            try holdingMoved(a, svc, id, tx.txid, tx.tx, @intCast(vout), false);
+        if (try svc.map(indexName(e.kind)).remove(try cat(a, &.{ e.tok, &op })))
+            try outputMoved(a, svc, id, tx.txid, tx.tx, @intCast(vout), e.kind, false);
         _ = try svc.map("outputs").remove(&op);
     }
     // What it spent is unspent again.
@@ -343,7 +508,7 @@ fn rejected(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx) anyer
         if (!eql(u8, by, &tx.txid)) continue;
         try svc.map("outputs").put(&op, .{ .bytes = try a.dupe(u8, v.bytes[0..37]) });
         const ik = try cat(a, &.{ e.tok, &op });
-        if (e.kind == .value and !(try svc.map("values").has(ik))) try heldMoved(a, svc, id, in.previous_outpoint.txid.bytes, in.previous_outpoint.index, true);
+        if (!(try svc.map(indexName(e.kind)).has(ik))) try storedMoved(a, svc, id, in.previous_outpoint.txid.bytes, in.previous_outpoint.index, e.kind, true);
         try svc.map(indexName(e.kind)).add(ik);
     }
 }
@@ -1090,7 +1255,8 @@ const not_found = "{\"status\":\"error\",\"message\":\"not found\"}";
 
 /// The prefix row `/<app>/` (0.14.0, D10; any method), by the route past the prefix:
 ///   `<token>`         200 JSON `{tokenId, topic, sym, dec, txid, vout, iconUrl?}`, `state`
-///   `<token>/holders` (0.15.0) 200 JSON `{count, rows: [{address, balance}]}` largest first, `?limit=1..100&skip=`,
+///   `<token>/holders` (0.15.0) 200 JSON `{count, rows: [{address, balance}], supply, authorities, burned, burns}`
+///                     (the counters 0.17.0) largest first, `?limit=1..100&skip=`,
 ///                     `state`; from the balance table the token's own topic feeds (on its token instance)
 ///   `<token>/icon`    200 the embedded icon's bytes, its media type; `imm` when the deploy is proven, else `state`
 ///   `<token>/deploy`  200 the deploy's Atomic BEEF from the chain state, `application/octet-stream`; the same rule
@@ -1177,10 +1343,12 @@ pub fn holdersOf(a: Allocator, svc: *Service, tk: []const u8, network: c.chain.N
     return .{ .count = try u64Of(try svc.map("holders").get(tk)), .rows = rows };
 }
 
-/// `<token>/holders`' JSON: `{count, rows: [{address, balance}]}`.
+/// `<token>/holders`' JSON: `{count, rows: [{address, balance}], supply, authorities, burned, burns}`
+/// (0.17.0: the token's counters beside its holders).
 fn holdersJson(a: Allocator, svc: *Service, tk: []const u8, network: c.chain.Network, q: HoldersQuery) ![]const u8 {
     const h = try holdersOf(a, svc, tk, network, q);
-    return jsonOf(a, .{ .count = h.count, .rows = h.rows });
+    const n = try countersOf(svc, tk);
+    return jsonOf(a, .{ .count = h.count, .rows = h.rows, .supply = n.supply, .authorities = n.authorities, .burned = n.burned, .burns = n.burns });
 }
 
 /// The app a read's call names: the read route's `app` (the install's; a read route names no program,
@@ -1198,6 +1366,8 @@ var delegate = false;
 fn run(a: Allocator) anyerror!void {
     const in = try sk.input(a);
     const func = in.getText("fn") orelse "";
+    // 0.17.0: the step's time for the hooks (a burn row's `at`).
+    now_ms = in.getUint("now") orelse 0;
     const route = if (eql(u8, func, "tokens")) &tokensRoute else if (eql(u8, func, "token")) &tokenRoute else {
         delegate = true;
         return;

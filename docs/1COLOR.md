@@ -310,7 +310,7 @@ a deploy the discovery topic admitted; any other path under the row is a
 | `/<app>/<token>` | `{tokenId, topic, sym, dec, txid, vout, iconUrl?}` (as a list row) | `public, max-age=5` |
 | `/<app>/<token>/icon` | the embedded icon's bytes, `Content-Type` its media type; 404 for a deploy without one (a BRC-161 JSON deploy always) | `public, max-age=31536000, immutable` when the deploy is proven in `chain/state` (a proof whose block is on its chain), else `public, max-age=5` |
 | `/<app>/<token>/deploy` | the deploy's Atomic BEEF from `chain/state` (`beefOf`), `application/octet-stream`; 404 when the chain state does not hold it | as `/icon` |
-| `/<app>/<token>/holders?limit=&skip=` (0.15.0) | `{count, rows: [{address, balance}]}` largest balance first, from the balance table (below); `limit` 1 to 100 (default 100), `skip` 0 to 100000; no deploy needed: on a token's own instance its topic `tm_color_<token>` feeds the table; `address` the P2PKH address on `chain/state`'s network (none: main) | `public, max-age=5` |
+| `/<app>/<token>/holders?limit=&skip=` (0.15.0) | `{count, rows: [{address, balance}], supply, authorities, burned, burns}` (the counters, 0.17.0) largest balance first, from the balance table (below); `limit` 1 to 100 (default 100), `skip` 0 to 100000; no deploy needed: on a token's own instance its topic `tm_color_<token>` feeds the table; `address` the P2PKH address on `chain/state`'s network (none: main) | `public, max-age=5` |
 
 The list and detail rows (0.15.0, D5) carry `amount`, the deploy output's supply (0 for an
 authority-only deploy), and `height`, the deploy's block height where the overlay has the deploy
@@ -335,6 +335,28 @@ output's script around the envelope: P2PKH on one side, nothing on the other). P
 contracts are not counted, nor an authority output (it holds no value); a deploy that
 carries the supply is a value output and counts like any other (0.15.1). No
 backfill: outputs indexed before 0.15.0 are not counted (rebuild the index).
+
+## The counters (0.17.0)
+
+David Case, 2026-11-07 (agent-env plans/read-optimizations-2026-11-07.md, D5): `color-lookup` keeps, per
+token, plain counters written as its hooks move outputs and unwound by a rejection:
+
+| map | key → value |
+|---|---|
+| `counters` | `tok → supply ‖ authorities ‖ burned ‖ burns` (4 × u64 BE) |
+| `burns` | `tok ‖ txid (internal order) → amount ‖ at` (2 × u64 BE), one row per transaction that burned |
+
+- `supply`: the circulating supply, the amounts of the unspent value outputs (`values`, a supply-holding
+  deploy among them): value outputs admitted minus value inputs consumed, moved exactly as `values` is.
+- `authorities`: the count of unspent authority outputs (`authorities`' members, moved the same way).
+- `burned`, `burns`: a transaction whose consumed value inputs (the token's, as the index filed them)
+  carry more of the token than its admitted value outputs burns the difference: its `burns` row, the
+  total, and a `burn` event (the pool events' shape: `{event: "burn", topic: "ls_color_<tokenId>",
+  tokenId, row: {kind: "burn", txid, amount, at}}`, `at` the step's time in ms). Its rejection removes
+  the row, debits the total and emits `row: {kind: "revert", txid, amount, at}`.
+
+Read: `<token>/holders` answers them beside `count` and `rows`. No backfill: outputs indexed before
+0.17.0 are not counted (a debit stops at zero; rebuild the index).
 
 ## Registering a token
 
