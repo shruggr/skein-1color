@@ -44,7 +44,7 @@
 //! address and the counters (`supply` by a value output's amount, `authorities` by one for an
 //! authority output); leaving (spent, or its transaction rejected) debits them. A deploy is filed
 //! by what it holds (0.15.1). Spent-ness for BRC-207 spendability is the chain state's
-//! (`ch.spentBy`, skein-chain 0.9.0).
+//! (`ch.spentBy`, skein-chain 0.10.0: a held spender not rejected).
 //!
 //! **BRC-207** (David Case, 2026-10-08): called as `ls_color_<assetId>`, it answers
 //!
@@ -495,7 +495,10 @@ fn admitted(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx, outpu
 fn spent(a: Allocator, svc: *Service, topic: []const u8, outpoint: lookup.Outpoint, _: lookup.Tx) anyerror!void {
     if (eql(u8, topic, deploys_topic)) return; // a registry: a deploy stays listed once spent
     const id = token.tokenIdOf(topic) orelse return;
-    // Debited once: only while the overlay has it admitted and not yet spent.
+    // Debited once: only while the overlay has it admitted and not yet spent. A coin already spent by
+    // another (skein-overlay 0.26.0: a PROVEN B admitted against a held unmined A; B's hooks run before
+    // A's `rejected`) was debited at A's spend: its spender is now B by the overlay's fact, and nothing
+    // moves again.
     const f = (try outputFact(a, outpoint.txid, outpoint.vout)) orelse return;
     if (f.state != .admitted) return;
     try storedMoved(a, svc, id, outpoint.txid, outpoint.vout, false);
@@ -519,7 +522,8 @@ fn rejected(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx) anyer
         const f = (try outputFact(a, tx.txid, @intCast(vout))) orelse continue;
         if (f.state == .admitted) try outputMoved(a, svc, id, tx.txid, tx.tx, @intCast(vout), false);
     }
-    // What it spent is unspent again.
+    // What it spent is unspent again — only a coin whose latest fact still names it as the spender
+    // (one a later transaction, e.g. a proven double spend, consumed is not given back here).
     for (tx.tx.inputs) |in| {
         const po = in.previous_outpoint;
         const f = (try outputFact(a, po.txid.bytes, po.index)) orelse continue;
@@ -601,8 +605,8 @@ pub fn parse207(a: Allocator, service: []const u8, q: Value) !Brc207 {
 /// A BRC-207 answer: of the queried outpoints, those the overlay has admitted (the latest
 /// `<app>/topic/output/<op>` fact not `reverted`) that are the asset's by their stored transaction
 /// (the fact's name carries no topic: on an instance serving several, the token is read from the
-/// output), and, for spendability, that the chain state names no spender for (skein-chain 0.9.0
-/// `spentBy`; `chain/output/<op>` once skein-chain 0.10.0 posts it).
+/// output), and, for spendability, that the chain state names no spender for that is not rejected
+/// (skein-chain 0.10.0 `spentBy`).
 pub fn answer207(a: Allocator, svc: *Service, ch: *lookup.Chain, q: Brc207) ![]const lookup.Output {
     const tk = tokKey(q.id);
     var out: std.ArrayList(lookup.Output) = .empty;
@@ -632,9 +636,8 @@ fn isAssetOutput(a: Allocator, s: c.store.Store, id: bsv21.TokenId, o: lookup.Ou
     return (try bsv21.tokenOf(a, id, o.txid, o.vout, script)) != null;
 }
 
-/// SEAM (skein-chain 0.10.0): the output's spender as the chain state names it today (the lowest-txid
-/// non-rejected held spender, skein-sdk 0.18.0 `State.spentBy`); to read `chain/output/<op>` latest
-/// ("spent by T") when that is posted.
+/// The output's spender at the chain level (skein-chain 0.10.0 contract §4, skein-sdk 0.19.0
+/// `State.spentBy`): the first held spender whose status is not rejected; null: unspent.
 fn spentByChain(ch: *lookup.Chain, o: lookup.Output) !?[32]u8 {
     return ch.spentBy(o.txid, o.vout);
 }

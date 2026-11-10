@@ -2576,3 +2576,38 @@ test "spent (0.18.0): a coin is debited once — while its latest output fact is
     const chain = try ch.save();
     try expectOps(&.{opName(a, t2, 0)}, try ask207(&l, service, chain, try q207(a, "color-spendability", .{ .uint = 1 }, asset, tname, &ops)));
 }
+
+test "double spend (skein-overlay 0.26.0 order): a proven B spends X that a held unmined A spent; B's hooks run before A's rejection; X ends spent by B, its holder debited and the supply counted once" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ms = w.store.MemStore.init(testing.allocator);
+    defer ms.deinit();
+    var l: Ls = .{ .a = a, .s = ms.store() };
+    l.use();
+    var buf: [names.max_topic_len]u8 = undefined;
+    const tname = try a.dupe(u8, names.topicName(&buf, .{ .txid = id_a }));
+    const H: u8 = 0x0a;
+    const t0 = rawSpend(a, &.{.{ .txid = .{0x01} ** 32, .vout = 0 }}, &.{valueOut(a, 500, &lockOf(H))});
+    const x = w.beef.txidOf(t0);
+    const ta = rawSpend(a, &.{.{ .txid = x, .vout = 0 }}, &.{valueOut(a, 500, &lockOf(0x0b))});
+    const tb = rawSpend(a, &.{.{ .txid = x, .vout = 0 }}, &.{valueOut(a, 500, &lockOf(0x0c))});
+    try l.admitted(tname, t0, &.{0});
+    // A (unmined) spends X.
+    try l.admitted(tname, ta, &.{0});
+    try l.spent(tname, t0, 0, ta);
+    // B (proven) spends X: its admitted and spent hooks, then A's rejection.
+    try l.admitted(tname, tb, &.{0});
+    try l.spent(tname, t0, 0, tb);
+    try l.rejected(tname, ta);
+    // X ends spent by B (the overlay's fact); H debited once, never given back.
+    const f = (try ls.outputFact(a, x, 0)).?;
+    try testing.expectEqual(ls.OutputState.spent, f.state);
+    try testing.expectEqualSlices(u8, &w.beef.txidOf(tb), &f.spent_by.?);
+    try testing.expect((try balanceOf(a, &l, H)) == null);
+    try testing.expect((try balanceOf(a, &l, 0x0b)) == null);
+    try testing.expectEqual(@as(u64, 500), (try balanceOf(a, &l, 0x0c)).?);
+    try testing.expectEqual(@as(u64, 1), (try holdersOf(a, &l, .main, 100, 0)).count);
+    try testing.expectEqual(@as(u64, 500), (try countersAt(a, &l)).supply);
+    try testing.expectEqual(@as(u64, 0), (try countersAt(a, &l)).burned);
+}
