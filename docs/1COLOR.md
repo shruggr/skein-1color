@@ -101,7 +101,7 @@ freeform queries (`{authoritiesTokenId}`, `{tokenId}`, `{txid, outputIndex}`) ar
 `<app>/topic/output/<txid>.<vout>` (the latest not `reverted`), the asset checked by parsing the stored
 transaction (the fact names no topic); spendability adds the chain state's spender (skein-chain 0.9.0).
 The lookup stores only summaries (`balances`, `byBalance`, `holders`, `counters`) and emits
-`<app>/color/burn/<txid>` and `<app>/color/symbol/<hex(lower sym)>/<txid>.<vout>` (below).
+`<app>/color/burn/<txid>/<tokenId>` and `<app>/color/symbol/<hex(lower sym)>/<txid>.<vout>` (below).
 
 Until 0.17.x the head `<app>/ls_color` also held five index maps (`values`, `authorities`,
 `outputs`, `admitted`, `deploys`) and `symbols` / `burns`; 0.18.0 drops them (the events above and the
@@ -322,7 +322,7 @@ token, plain counters written as its hooks move outputs and unwound by a rejecti
 - `authorities`: the count of unspent authority outputs.
 - `burned`, `burns`: a transaction whose consumed value inputs (the token's outputs the overlay admitted)
   carry more of the token than its admitted value outputs burns the difference: the total, and (0.18.0)
-  the fact `<app>/color/burn/<txid hex>` `{tokenId, amount, at}` (`at` the step's time in ms). Its
+  the fact `<app>/color/burn/<txid hex>/<tokenId>` `{tokenId, amount, at}` (`at` the step's time in ms). Its
   rejection debits the total and emits `{reverted: true}` under the same name. (Before 0.18.0: a `burns`
   map and a bare `burn` event, which the kernel's name rule now refuses.)
 - 0.18.0: a discovery deploy with a symbol emits `<app>/color/symbol/<hex(lower sym)>/<txid>.<vout>`

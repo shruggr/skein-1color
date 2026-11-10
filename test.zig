@@ -1022,8 +1022,23 @@ const Ls = struct {
     }
 
     fn rejected(self: *Ls, t: []const u8, raw: []const u8) !void {
+        self.use();
+        const txid = w.beef.txidOf(raw);
+        const tx = try bsvz.transaction.Transaction.parse(self.a, raw);
+        // `givenBack` (skein-overlay 0.26.0): the inputs whose coin it consumed and no other
+        // admitted transaction consumes (here: the coin's latest fact names it as the spender).
+        var given: std.ArrayList(Value) = .empty;
+        for (tx.inputs, 0..) |in, i| {
+            const po = in.previous_outpoint;
+            const f = (try ls.outputFact(self.a, po.txid.bytes, po.index)) orelse continue;
+            if (f.state == .spent and std.mem.eql(u8, &f.spent_by.?, &txid)) try given.append(self.a, .{ .uint = i });
+        }
+        try self.rejectedWith(t, raw, given.items);
+    }
+
+    fn rejectedWith(self: *Ls, t: []const u8, raw: []const u8, given: []const Value) !void {
         const cid = try self.s.putBitcoin(self.a, .tx, raw);
-        try self.hook("rejected", t, &.{.{ .key = "tx", .value = .{ .cid = cid } }});
+        try self.hook("rejected", t, &.{ .{ .key = "tx", .value = .{ .cid = cid } }, .{ .key = "givenBack", .value = .{ .array = given } } });
         const txid = w.beef.txidOf(raw);
         const tx = try bsvz.transaction.Transaction.parse(self.a, raw);
         for (0..tx.outputs.len) |o| {
@@ -1870,10 +1885,10 @@ test "counters (0.17.0): supply, unspent authorities, burned at admission; a bur
     try l.admitted(tname, t2, &.{0});
     try testing.expectEqual(@as(usize, 1), l.events.len);
     const ev = l.events[0];
-    // 0.18.0: the burn is a fact under the app's own name, `<app>/color/burn/<txid>` {tokenId, amount, at}.
-    const burn_name = try std.fmt.allocPrint(a, "1color/color/burn/{s}", .{&w.header.toHex(t2id)});
+    // 0.18.0: the burn is a fact under the app's own name, `<app>/color/burn/<txid>/<tokenId>` {tokenId, amount, at}.
+    const burn_name = try std.fmt.allocPrint(a, "1color/color/burn/{s}/{s}", .{ &w.header.toHex(t2id), idString(a, id_a, 0) });
     try testing.expectEqualStrings(burn_name, ev.getText("event").?);
-    try testing.expectEqualStrings(burn_name, try ls.burnName(a, t2id));
+    try testing.expectEqualStrings(burn_name, try ls.burnName(a, t2id, tid_a));
     const id = idString(a, id_a, 0);
     try testing.expectEqual(@as(usize, 4), ev.map.len);
     try testing.expectEqualStrings(id, ev.getText("tokenId").?);
@@ -2542,7 +2557,7 @@ test "symbol facts (0.18.0): a discovery deploy with a symbol emits `<app>/color
     // Another app's names: the overlay's output facts and the lookup's own under it.
     try ls.setApp("amm");
     try testing.expectEqualStrings(try std.fmt.allocPrint(a, "amm/topic/output/{s}.3", .{&w.header.toHex(txid)}), try ls.topicOutputName(a, txid, 3));
-    try testing.expectEqualStrings(try std.fmt.allocPrint(a, "amm/color/burn/{s}", .{&w.header.toHex(txid)}), try ls.burnName(a, txid));
+    try testing.expectEqualStrings(try std.fmt.allocPrint(a, "amm/color/burn/{s}/{s}", .{ &w.header.toHex(txid), idString(a, txid, 0) }), try ls.burnName(a, txid, .{ .txid = txid }));
     l.use();
 }
 
@@ -2610,4 +2625,71 @@ test "double spend (skein-overlay 0.26.0 order): a proven B spends X that a held
     try testing.expectEqual(@as(u64, 1), (try holdersOf(a, &l, .main, 100, 0)).count);
     try testing.expectEqual(@as(u64, 500), (try countersAt(a, &l)).supply);
     try testing.expectEqual(@as(u64, 0), (try countersAt(a, &l)).burned);
+}
+
+test "givenBack (skein-overlay 0.26.0): a rejection credits back only the inputs the engine lists" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ms = w.store.MemStore.init(testing.allocator);
+    defer ms.deinit();
+    var l: Ls = .{ .a = a, .s = ms.store() };
+    l.use();
+    var buf: [names.max_topic_len]u8 = undefined;
+    const tname = try a.dupe(u8, names.topicName(&buf, .{ .txid = id_a }));
+    const t0 = rawSpend(a, &.{.{ .txid = .{0x01} ** 32, .vout = 0 }}, &.{ valueOut(a, 300, &lockOf(0x0a)), valueOut(a, 200, &lockOf(0x0b)) });
+    const x = w.beef.txidOf(t0);
+    const t1 = rawSpend(a, &.{ .{ .txid = x, .vout = 0 }, .{ .txid = x, .vout = 1 } }, &.{valueOut(a, 500, &lockOf(0x0c))});
+    try l.admitted(tname, t0, &.{ 0, 1 });
+    try l.admitted(tname, t1, &.{0});
+    try l.spent(tname, t0, 0, t1);
+    try l.spent(tname, t0, 1, t1);
+    // The engine gives back input 1 only: 0x0b credited, 0x0a not.
+    try l.rejectedWith(tname, t1, &.{.{ .uint = 1 }});
+    try testing.expect((try balanceOf(a, &l, 0x0a)) == null);
+    try testing.expectEqual(@as(u64, 200), (try balanceOf(a, &l, 0x0b)).?);
+    try testing.expect((try balanceOf(a, &l, 0x0c)) == null);
+    try testing.expectEqual(@as(u64, 200), (try countersAt(a, &l)).supply);
+}
+
+test "burns of two tokens by one transaction (0.18.0): `<app>/color/burn/<txid>/<tokenId>` keeps both, each undone by its own name" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ms = w.store.MemStore.init(testing.allocator);
+    defer ms.deinit();
+    var l: Ls = .{ .a = a, .s = ms.store() };
+    l.use();
+    const id_b: [32]u8 = .{0xb6} ** 32;
+    var b1: [names.max_topic_len]u8 = undefined;
+    var b2: [names.max_topic_len]u8 = undefined;
+    const ta = try a.dupe(u8, names.topicName(&b1, .{ .txid = id_a }));
+    const tb = try a.dupe(u8, names.topicName(&b2, .{ .txid = id_b }));
+    const t0 = rawSpend(a, &.{.{ .txid = .{0x01} ** 32, .vout = 0 }}, &.{ valueOutOf(a, id_a, 100, &lockOf(0x0a)), valueOutOf(a, id_b, 70, &lockOf(0x0a)) });
+    const x = w.beef.txidOf(t0);
+    try l.admitted(ta, t0, &.{0});
+    try l.admitted(tb, t0, &.{1});
+    // One transaction spends both and outputs nothing of either: both burned, one name each.
+    const t1 = rawSpend(a, &.{ .{ .txid = x, .vout = 0 }, .{ .txid = x, .vout = 1 } }, &.{&p2pkh_lock});
+    const t1id = w.beef.txidOf(t1);
+    try l.admitted(ta, t1, &.{});
+    try testing.expectEqual(@as(usize, 1), l.events.len);
+    try testing.expectEqualStrings(try ls.burnName(a, t1id, tid_a), l.events[0].getText("event").?);
+    try l.admitted(tb, t1, &.{});
+    try testing.expectEqual(@as(usize, 1), l.events.len);
+    try testing.expectEqualStrings(try ls.burnName(a, t1id, .{ .txid = id_b }), l.events[0].getText("event").?);
+    try testing.expectEqual(@as(u64, 70), l.events[0].getUint("amount").?);
+    var svc = try lookup.Service.loadIndex(a, l.s, ls.service_name, ls.index_name, ls.spec.maps, l.state);
+    const tok_b: [36]u8 = .{0xb6} ** 32 ++ .{ 0, 0, 0, 0 };
+    try testing.expectEqual(@as(u64, 100), (try ls.countersOf(&svc, &ls_tok_a)).burned);
+    try testing.expectEqual(@as(u64, 70), (try ls.countersOf(&svc, &tok_b)).burned);
+    // Each token's rejection undoes its own burn.
+    try l.rejected(ta, t1);
+    try testing.expectEqual(@as(usize, 1), l.events.len);
+    try testing.expectEqualStrings(try ls.burnName(a, t1id, tid_a), l.events[0].getText("event").?);
+    try l.rejected(tb, t1);
+    try testing.expectEqual(@as(usize, 1), l.events.len);
+    svc = try lookup.Service.loadIndex(a, l.s, ls.service_name, ls.index_name, ls.spec.maps, l.state);
+    try testing.expectEqual(@as(u64, 0), (try ls.countersOf(&svc, &ls_tok_a)).burned);
+    try testing.expectEqual(@as(u64, 0), (try ls.countersOf(&svc, &tok_b)).burned);
 }

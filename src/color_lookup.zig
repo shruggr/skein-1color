@@ -25,7 +25,7 @@
 //!
 //! WHAT IT EMITS (the engine emits a hook's events in the step):
 //!
-//!   <app>/color/burn/<txid>                         {tokenId, amount, at} | {reverted: true}
+//!   <app>/color/burn/<txid>/<tokenId>               {tokenId, amount, at} | {reverted: true}
 //!   <app>/color/symbol/<hex(lower sym)>/<txid>.<vout>  {tokenId} | {reverted: true}  (discovery deploys)
 //!
 //! A burn: a transaction whose consumed value inputs (outputs of the token admitted here, unspent
@@ -229,9 +229,10 @@ fn outpointOfName(name: []const u8) ?lookup.Output {
     return .{ .txid = txid, .vout = vout };
 }
 
-/// The burn of `txid`: `<app>/color/burn/<txid hex>`.
-pub fn burnName(a: Allocator, txid: [32]u8) ![]const u8 {
-    return std.fmt.allocPrint(a, "{s}/color/burn/{s}", .{ app_name, &c.header.toHex(txid) });
+/// The burn of token `id` by `txid`: `<app>/color/burn/<txid hex>/<tokenId>` (one name per token, so a
+/// transaction burning two tokens on one instance has both).
+pub fn burnName(a: Allocator, txid: [32]u8, id: bsv21.TokenId) ![]const u8 {
+    return std.fmt.allocPrint(a, "{s}/color/burn/{s}/{s}", .{ app_name, &c.header.toHex(txid), try tokenIdTextAlloc(a, id) });
 }
 
 /// The prefix of a symbol's names, `<app>/color/symbol/<hex(lower sym)>` (a hex prefix of a
@@ -349,7 +350,7 @@ fn burnCheck(a: Allocator, svc: *Service, id: bsv21.TokenId, tk: []const u8, tx:
         out_sum += f.amount;
     }
     if (in_sum <= out_sum) return;
-    const name = try burnName(a, tx.txid);
+    const name = try burnName(a, tx.txid, id);
     if (try latestOf(a, name)) |r| if (!isReverted(r)) return;
     const amount: u64 = std.math.cast(u64, in_sum - out_sum) orelse std.math.maxInt(u64);
     var n = try countersOf(svc, tk);
@@ -365,10 +366,9 @@ fn burnCheck(a: Allocator, svc: *Service, id: bsv21.TokenId, tk: []const u8, tx:
 
 /// A rejected `tx`'s burn, unwound: the total debited by the amount its fact carries, `{reverted: true}` emitted.
 fn burnUndo(a: Allocator, svc: *Service, id: bsv21.TokenId, tk: []const u8, txid: [32]u8) !void {
-    const name = try burnName(a, txid);
+    const name = try burnName(a, txid, id);
     const r = (try latestOf(a, name)) orelse return;
     if (isReverted(r)) return;
-    if (!eql(u8, r.getText("tokenId") orelse "", try tokenIdTextAlloc(a, id))) return;
     const amount = r.getUint("amount") orelse return error.BadEvents;
     var n = try countersOf(svc, tk);
     n.burned -|= amount;
@@ -522,9 +522,11 @@ fn rejected(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx) anyer
         const f = (try outputFact(a, tx.txid, @intCast(vout))) orelse continue;
         if (f.state == .admitted) try outputMoved(a, svc, id, tx.txid, tx.tx, @intCast(vout), false);
     }
-    // What it spent is unspent again — only a coin whose latest fact still names it as the spender
-    // (one a later transaction, e.g. a proven double spend, consumed is not given back here).
-    for (tx.tx.inputs) |in| {
+    // What it spent is unspent again: only the inputs the engine gives back (skein-overlay 0.26.0
+    // `givenBack`: a coin another admitted transaction consumes, e.g. a proven double spend's, is not
+    // listed), and only while the coin's latest fact still names it as the spender (credited once).
+    for (tx.tx.inputs, 0..) |in, i| {
+        if (svc.given_back) |g| if (std.mem.indexOfScalar(u32, g, @intCast(i)) == null) continue;
         const po = in.previous_outpoint;
         const f = (try outputFact(a, po.txid.bytes, po.index)) orelse continue;
         if (f.state != .spent) continue;
@@ -667,7 +669,7 @@ pub fn metadata(a: Allocator, service: []const u8) anyerror!lookup.Metadata {
     };
 }
 
-pub const version = "0.5.1";
+pub const version = "0.6.0";
 
 pub fn documentation(_: Allocator, service: []const u8) anyerror![]const u8 {
     if (color.name.tokenIdOfLookup(service) != null) return
