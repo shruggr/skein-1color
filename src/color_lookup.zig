@@ -1,122 +1,64 @@
 //! color-lookup: the 1Color (BRC-162) lookup program (shruggr/skein#120
-//! item 3). It indexes the outputs the 1Color topics admit, through the
-//! skein-overlay lookup hooks (once per admitted transaction and topic,
-//! skein-overlay 0.11.0), in one index, the head `<app>/ls_color`
+//! item 3), a RECOGNIZER (0.18.0, agent-env plans/research/plan-pass-recognizers-2026-11-09.md):
+//! through the skein-overlay lookup hooks (once per admitted transaction and topic) it keeps no
+//! index; what is found or listed is an EVENT (the kernel's event index, skein docs/VM.md "The
+//! event index"), and only the running SUMMARIES are stored, in the head `<app>/ls_color`
 //! (`spec.index`), whatever name it is called as:
 //!
-//!   ls_color               the queries below; over the discovery topic tm_color, BRC-207's
-//!                            two queries with `topic: "tm_color"` (0.12.1)
+//!   ls_color               over the discovery topic tm_color, BRC-207's two queries with
+//!                            `topic: "tm_color"` (0.12.1)
 //!   ls_color_<assetId>     a token's BRC-207 lookup beside its topic tm_color_<assetId>
 //!
-//! A lookup is this program under a name; the name pairs it with the topics
-//! that feed it, and the queries are the same under every name (David,
-//! 2026-10-29: "There should be no difference between what these things are
-//! looking up. The only difference is which topic the instance has got access
-//! to."). 0.11.x's discovery lookup `ls_color_deploys` is gone, no alias: a
-//! deploy is looked up under the name over `tm_color`, `ls_color`, by BRC-207's
-//! `color-admission` query (David, 2026-10-29), its outpoint the token id
-//! `<txid>_<vout>` read as `<txid>.<vout>`.
+//! A lookup is this program under a name; the name pairs it with the topics that feed it
+//! (David, 2026-10-29). 0.18.0: the three freeform queries ({tokenId}, {authoritiesTokenId},
+//! {txid, outputIndex}) are gone (no consumer); BRC-207's queries are all it answers.
 //!
-//! Three queries in the shapes of the ts-stack
-//! BRC-162 lookup (Deggen's, ts-stack packages/overlays/topics):
+//! WHAT IT READS (events, `<app>` the app the engine names in every call):
 //!
-//!   {tokenId, limit?, skip?}             the token's unspent value outputs (a supply-holding deploy among them), in outpoint order
-//!   {authoritiesTokenId, limit?, skip?}  the token's unspent authority outputs (an authority-only deploy among them), in outpoint order
-//!   {txid, outputIndex}                  the value or authority output at that outpoint, if unspent
+//!   <app>/topic/output/<txid>.<vout>   the overlay's own fact {state: admitted | spent | reverted,
+//!                                      spentBy?}; the latest is the output's standing: admitted
+//!                                      (spent or not) unless `reverted` (BRC-207 admission; the
+//!                                      hooks' "already credited" guard; the deploy list on
+//!                                      discovery). The name carries no topic (skein-overlay 0.25.1),
+//!                                      so the token of an output is read by parsing its stored
+//!                                      transaction for the asset asked about.
 //!
-//! The first of `authoritiesTokenId`, `tokenId` present answers; else the
-//! outpoint. `limit` is 1 to 100 (default 100), `skip` 0 to 100000 (default
-//! 0). Any other key, or a value out of shape, is refused. A token id is
-//! taken as `<txid>`, `<txid>_<vout>` or `<txid>.<vout>` (name.zig
-//! `tokenIdOfString`): `<txid>` and `<txid>_0` are the token deployed at
-//! output 0 (either form), a non-zero vout the deploy outpoint of a BRC-161
-//! one. A token id is written `<txid>_<vout>` for every token, `_0` included
-//! (BRC-162 "Token identification"; David, 2026-10-07): the bare txid is the
-//! wire form only. Answers are output-lists (outpoints, no token id strings); the engine
-//! builds each output's BEEF from the chain state.
+//! WHAT IT EMITS (the engine emits a hook's events in the step):
 //!
-//! The maps (`tok` = the token's deploy txid in display order ‖ vout, u32 BE;
-//! `op` = an outpoint's txid in display order ‖ vout, u32 BE, so key order is
-//! outpoint order: txid hex, then index):
+//!   <app>/color/burn/<txid>                         {tokenId, amount, at} | {reverted: true}
+//!   <app>/color/symbol/<hex(lower sym)>/<txid>.<vout>  {tokenId} | {reverted: true}  (discovery deploys)
 //!
-//!   values       tok ‖ op → null                 unspent value outputs (and supply-holding deploys)
-//!   authorities  tok ‖ op → null                 unspent authority outputs (and authority-only deploys)
-//!   outputs      op → kind (0 value, 1 authority) ‖ tok [‖ spending txid, internal order]
-//!   admitted     tok ‖ op → null                 every output the token's topic validly admitted
-//!                                                (BRC-207: kept once spent, dropped on rejection)
+//! A burn: a transaction whose consumed value inputs (outputs of the token admitted here, unspent
+//! or spent by it) carry more of the token than its admitted value outputs burns the difference;
+//! its `rejected` hook emits `{reverted: true}` under the same name. A discovery deploy with a
+//! symbol emits its symbol name (the token list's `q`); its rejection the revert.
 //!
-//! `admitted` classifies each admitted output by the BSV-21 rules for the
-//! topic's token (bsv21.zig `tokenOf`) by what it holds: a value (transfer, mint,
-//! or a deploy that carries the supply) goes in `values`, an authority (an authority
-//! output, or an authority-only deploy) in `authorities`, a BRC-161 burn in neither
-//! (0.15.1: until 0.15.0 every deploy was filed as an authority, an error). `spent` takes the output out of its index and records its
-//! spender; `rejected` drops the transaction's outputs and gives back the
-//! ones it had spent. A hook for a topic that is not a token's does nothing.
+//! WHAT IT STORES (summaries, `tok` = the token's deploy txid in display order ‖ vout BE):
 //!
-//! The BALANCE TABLE (0.15.0, D4: agent-env plans/history-api-2026-11-05.md), per token, over the
-//! unspent value outputs (`values`) whose locking script is P2PKH (a binary output's lock after the
-//! prefix; a JSON output's script around the envelope: the P2PKH on one side, nothing on the other);
-//! other outputs (pools, contracts) are not counted:
+//!   balances     tok ‖ pkh (20) → amount (u64 BE)                   a P2PKH address's balance, > 0
+//!   byBalance    tok ‖ (2^64 − 1 − amount) (u64 BE) ‖ pkh → null      largest first
+//!   holders      tok → count (u64 BE)                                 the addresses with a balance
+//!   counters     tok → supply ‖ authorities ‖ burned ‖ burns (4 × u64 BE)
 //!
-//!   balances     tok ‖ pkh (20) → amount (u64 BE, 8 bytes)        the address's balance, > 0
-//!   byBalance    tok ‖ (2^64 − 1 − amount) (u64 BE) ‖ pkh → null  largest first
-//!   holders      tok → count (u64 BE, 8 bytes)                     the addresses with a balance
+//! An output of the token entering (admitted, or given back by a rejection) credits its P2PKH
+//! address and the counters (`supply` by a value output's amount, `authorities` by one for an
+//! authority output); leaving (spent, or its transaction rejected) debits them. A deploy is filed
+//! by what it holds (0.15.1). Spent-ness for BRC-207 spendability is the chain state's
+//! (`ch.spentBy`, skein-chain 0.9.0).
 //!
-//! kept exactly as `values` is: an output entering `values` (admitted, or given back by a
-//! rejection) credits its address, one leaving it (spent, or its transaction rejected) debits it;
-//! `byBalance` re-keyed on every change; a zero balance leaves both. No backfill: outputs indexed
-//! before 0.15.0 are not counted.
-//!
-//! THE COUNTERS (0.17.0, agent-env plans/read-optimizations-2026-11-07.md D5), per token, written as
-//! the hooks move outputs and unwound by a rejection, in one plain record per token:
-//!
-//!   counters     tok → supply ‖ authorities ‖ burned ‖ burns (4 × u64 BE, 32 bytes)
-//!   burns        tok ‖ txid (internal order) → amount ‖ at (2 × u64 BE)   one row per burning transaction
-//!
-//! `supply` the circulating supply: the amounts of the token's unspent value outputs (`values`: a
-//! supply-holding deploy among them), credited as an output enters `values` (admitted, given back by a
-//! rejection) and debited as it leaves (spent, its transaction rejected) — value outputs admitted
-//! minus value inputs consumed; `authorities` the count of unspent authority outputs (`authorities`'
-//! members, moved the same way); `burned` the total burned and `burns` the transactions that burned:
-//! a transaction whose consumed value inputs (the token's, as this index filed them) carry more of the
-//! token than its admitted value outputs burns the difference — its `burns` row is written, the total
-//! credited, and a `burn` EVENT emitted (skein-overlay 0.20.4 `Service.emit`, the pool events' shape:
-//! `{event: "burn", topic: "ls_color_<tokenId>", tokenId, row: {kind: "burn", txid, amount, at}}`, `at`
-//! the step's time in ms); a rejection of it removes the row, debits the total and emits `{…, row:
-//! {kind: "revert", txid, amount, at}}`. No backfill: outputs indexed before 0.17.0 are not counted
-//! (a debit stops at zero). Read: `<token>/holders` answers `supply`, `authorities`, `burned`, `burns`
-//! beside its `count` and `rows`.
-//!
-//! The discovery topic `tm_color` feeds (by the topic, as every hook) the map
-//!
-//!   deploys      tok → null                       every admitted deploy (a token id is its deploy outpoint)
-//!   symbols      lower(sym) ‖ tok → null          the deploy's symbol, ASCII lower-cased, then its token key
-//!                                                (0.16.0: the token list's `q`; a deploy without a symbol has
-//!                                                no row; written by `admitted`, removed by `rejected`; no
-//!                                                backfill: a deploy admitted before 0.16.0 has none)
-//!
-//! `admitted` adds each valid deploy output (token.zig `deployOf`) and its symbol row, `spent`
-//! does nothing (a registry), `rejected` removes the transaction's deploys and their symbol rows;
-//! under `ls_color` BRC-207's query with `topic: "tm_color"` and the token's
-//! `assetId` answers, of the queried outpoints, the asset's deploy if the
-//! topic admitted it (`color-admission`: spent or not, a registry;
-//! `color-spendability`: and unspent by the chain state). The three queries
-//! above read the token topics' maps only.
-//!
-//! **BRC-207** (David Case, 2026-10-08): called as `ls_color_<assetId>`, it
-//! answers
+//! **BRC-207** (David Case, 2026-10-08): called as `ls_color_<assetId>`, it answers
 //!
 //!   {type: "color-spendability" | "color-admission", version: 1, assetId,
 //!    topic: "tm_color_<assetId>", outpoints: ["<txid>.<vout>", …]}
 //!
-//! validated strictly (these five keys and no other; version 1; assetId and
-//! topic exactly the service name's; each outpoint canonical BRC-36 dot form,
-//! lowercase, the index without leading zeros), as an output-list of exactly
-//! the queried outpoints, each once, in the query's order: spendability —
-//! those in `admitted` for the asset and unspent (the chain state names no
-//! spender, as the engine's `inTopic` reads it); admission — those in
-//! `admitted`, spent or not. An empty list is a valid "no". Any other query
-//! there is refused.
+//! validated strictly (these five keys and no other; version 1; assetId and topic exactly the
+//! service name's; each outpoint canonical BRC-36 dot form, lowercase, the index without leading
+//! zeros), as an output-list of exactly the queried outpoints, each once, in the query's order:
+//! admission — those whose latest `<app>/topic/output` fact is not `reverted` and that are the
+//! asset's outputs by their stored transaction; spendability — and the chain state names no
+//! spender. Called as `ls_color` with `topic: "tm_color"`: of the queried outpoints, the asset's
+//! deploy (its token id's outpoint) on the same rule. An empty list is a valid "no"; any other
+//! query is refused.
 const std = @import("std");
 const c = @import("chain");
 const lookup = @import("lookup");
@@ -137,7 +79,7 @@ pub const index_name = service_name;
 const deploys_topic = color.name.deploys_topic;
 
 pub const spec: lookup.Spec = .{
-    .maps = &.{ "values", "authorities", "outputs", "deploys", "admitted", "balances", "byBalance", "holders", "symbols", "counters", "burns" },
+    .maps = &.{ "balances", "byBalance", "holders", "counters" },
     .index = index_name,
     .answer = answer,
     .admitted = admitted,
@@ -170,13 +112,6 @@ fn opOf(key: []const u8) lookup.Output {
     return .{ .txid = display(key[0..32].*), .vout = std.mem.readInt(u32, key[32..36], .big) };
 }
 
-fn indexName(k: Kind) []const u8 {
-    return switch (k) {
-        .value => "values",
-        .authority => "authorities",
-    };
-}
-
 fn cat(a: Allocator, parts: []const []const u8) ![]u8 {
     return std.mem.concat(a, u8, parts);
 }
@@ -184,20 +119,15 @@ fn cat(a: Allocator, parts: []const []const u8) ![]u8 {
 /// The kind of output `vout` of `tx` is for token `id`, or null (not its, or a BRC-161 burn).
 fn kindOf(a: Allocator, id: bsv21.TokenId, tx: lookup.Tx, vout: u32) !?Kind {
     if (vout >= tx.tx.outputs.len) return error.BadArgs;
-    const t = (try bsv21.tokenOf(a, id, tx.txid, vout, tx.tx.outputs[vout].locking_script.bytes)) orelse return null;
-    // By what it holds (0.15.1): a deploy carrying the supply is a value output, an authority-only one an authority.
-    return switch (t.role) {
-        .deploy => if (t.authority or t.amount == 0) .authority else .value,
-        .authority => .authority,
-        .value => .value,
-        .burn => null,
-    };
+    const f = (try filedOf(a, id, tx.txid, tx.tx, vout)) orelse return null;
+    return f.kind;
 }
 
 /// The kind and amount of output `vout` of transaction `t` (txid `txid`) for token `id`, or null.
 fn filedOf(a: Allocator, id: bsv21.TokenId, txid: [32]u8, t: c.bsvz.transaction.Transaction, vout: u32) !?struct { kind: Kind, amount: u64 } {
     if (vout >= t.outputs.len) return null;
     const tk = (try bsv21.tokenOf(a, id, txid, vout, t.outputs[vout].locking_script.bytes)) orelse return null;
+    // By what it holds (0.15.1): a deploy carrying the supply is a value output, an authority-only one an authority.
     const k: Kind = switch (tk.role) {
         .deploy => if (tk.authority or tk.amount == 0) .authority else .value,
         .authority => .authority,
@@ -207,10 +137,139 @@ fn filedOf(a: Allocator, id: bsv21.TokenId, txid: [32]u8, t: c.bsvz.transaction.
     return .{ .kind = k, .amount = if (k == .value) tk.amount else 0 };
 }
 
+/// A stored transaction by its txid, decoded; null when the store does not hold it.
+fn storedTx(a: Allocator, s: c.store.Store, txid: [32]u8) ?c.bsvz.transaction.Transaction {
+    const raw = s.tryGet(a, &c.store.hashCid(.tx, txid)) orelse return null;
+    return c.bsvz.transaction.Transaction.parse(a, raw) catch null;
+}
+
+// ---------------------------------------------------------------- the event index (0.18.0)
+
+/// A read of the kernel's event index (skein docs/VM.md "The event index"): the query `{name |
+/// prefix, after?, limit?, latest?}` → `[{name, place, cid, record}]`, newest last. Set by `run`
+/// to the `events` import; a native test sets its own. Null: no index to read (error.NoEventIndex).
+pub const EventsFn = *const fn (a: Allocator, query: Value) anyerror!Value;
+pub var events_fn: ?EventsFn = null;
+
+var app_buf: [256]u8 = undefined;
+/// The app the call names (`<app>`, the first segment of every event name it reads or emits; the
+/// engine names it in every hook and lookup call, a read route by its row). Set by `run`.
+pub var app_name: []const u8 = "1color";
+
+pub fn setApp(app: []const u8) !void {
+    if (app.len > app_buf.len) return error.BadArgs;
+    @memcpy(app_buf[0..app.len], app);
+    app_name = app_buf[0..app.len];
+}
+
+/// One fact read back: its name and its record.
+pub const Fact = struct { name: []const u8, record: Value };
+
+fn readFacts(a: Allocator, key: []const u8, name: []const u8, latest: bool) ![]const Fact {
+    const f = events_fn orelse return error.NoEventIndex;
+    var es: std.ArrayList(c.cbor.Entry) = .empty;
+    try es.append(a, .{ .key = key, .value = .{ .text = name } });
+    if (latest) try es.append(a, .{ .key = "latest", .value = .{ .boolean = true } });
+    const v = try f(a, .{ .map = es.items });
+    if (v != .array) return error.BadEvents;
+    const out = try a.alloc(Fact, v.array.len);
+    for (v.array, out) |row, *o| o.* = .{ .name = row.getText("name") orelse return error.BadEvents, .record = row.get("record") orelse return error.BadEvents };
+    return out;
+}
+
+/// The latest fact under exactly `name`, or null.
+fn latestOf(a: Allocator, name: []const u8) !?Value {
+    const fs = try readFacts(a, "name", name, true);
+    return if (fs.len == 0) null else fs[fs.len - 1].record;
+}
+
+/// The latest fact under every name `prefix` starts (one per name, in place order).
+fn latestUnder(a: Allocator, prefix: []const u8) ![]const Fact {
+    return readFacts(a, "prefix", prefix, true);
+}
+
+fn isReverted(r: Value) bool {
+    return r.getBool("reverted") orelse false;
+}
+
+/// The overlay's name for an output's standing (skein-overlay 0.25.1 submit.zig `topicOutputName`):
+/// `<app>/topic/output/<txid hex>.<vout>`.
+pub fn topicOutputName(a: Allocator, txid: [32]u8, vout: u32) ![]const u8 {
+    return std.fmt.allocPrint(a, "{s}/topic/output/{s}.{d}", .{ app_name, &c.header.toHex(txid), vout });
+}
+
+pub const OutputState = enum { admitted, spent, reverted };
+pub const OutputFact = struct { state: OutputState, spent_by: ?[32]u8 = null };
+
+/// The latest `<app>/topic/output/<txid>.<vout>` fact, or null (never admitted here).
+pub fn outputFact(a: Allocator, txid: [32]u8, vout: u32) !?OutputFact {
+    const r = (try latestOf(a, try topicOutputName(a, txid, vout))) orelse return null;
+    return try outputFactOf(r);
+}
+
+fn outputFactOf(r: Value) !OutputFact {
+    const st = std.meta.stringToEnum(OutputState, r.getText("state") orelse return error.BadEvents) orelse return error.BadEvents;
+    const by: ?[32]u8 = if (r.getText("spentBy")) |t| c.header.fromHex(t) catch return error.BadEvents else null;
+    return .{ .state = st, .spent_by = by };
+}
+
+/// Whether the overlay has the output admitted, spent or not (its latest fact not `reverted`).
+fn standing(f: ?OutputFact) bool {
+    const x = f orelse return false;
+    return x.state != .reverted;
+}
+
+/// The outpoint a `<…>/<txid hex>.<vout>` name ends in, or null.
+fn outpointOfName(name: []const u8) ?lookup.Output {
+    const i = std.mem.lastIndexOfScalar(u8, name, '/') orelse return null;
+    const t = name[i + 1 ..];
+    if (t.len < 66 or t[64] != '.') return null;
+    const txid = c.header.fromHex(t[0..64]) catch return null;
+    const vout = std.fmt.parseInt(u32, t[65..], 10) catch return null;
+    return .{ .txid = txid, .vout = vout };
+}
+
+/// The burn of `txid`: `<app>/color/burn/<txid hex>`.
+pub fn burnName(a: Allocator, txid: [32]u8) ![]const u8 {
+    return std.fmt.allocPrint(a, "{s}/color/burn/{s}", .{ app_name, &c.header.toHex(txid) });
+}
+
+/// The prefix of a symbol's names, `<app>/color/symbol/<hex(lower sym)>` (a hex prefix of a
+/// symbol's names is a prefix of its own: hex keeps a byte prefix a prefix).
+fn symbolPrefix(a: Allocator, lower: []const u8) ![]const u8 {
+    const digits = "0123456789abcdef";
+    const hex = try a.alloc(u8, lower.len * 2);
+    for (lower, 0..) |x, i| {
+        hex[2 * i] = digits[x >> 4];
+        hex[2 * i + 1] = digits[x & 15];
+    }
+    return std.fmt.allocPrint(a, "{s}/color/symbol/{s}", .{ app_name, hex });
+}
+
+/// A deploy's symbol name: `<app>/color/symbol/<hex(lower sym)>/<txid hex>.<vout>`.
+pub fn symbolName(a: Allocator, sym: []const u8, txid: [32]u8, vout: u32) ![]const u8 {
+    const lower = try std.ascii.allocLowerString(a, sym);
+    return std.fmt.allocPrint(a, "{s}/{s}.{d}", .{ try symbolPrefix(a, lower), &c.header.toHex(txid), vout });
+}
+
+fn tokenIdTextAlloc(a: Allocator, id: bsv21.TokenId) ![]const u8 {
+    const nid: color.name.TokenId = .{ .txid = id.txid, .vout = id.vout, .kind = if (id.kind == .native) .native else .legacy };
+    var tb: [color.name.max_suffix_len]u8 = undefined;
+    return a.dupe(u8, color.name.tokenIdText(&tb, nid));
+}
+
+fn emitFact(a: Allocator, svc: *Service, name: []const u8, fields: []const c.cbor.Entry) !void {
+    try svc.emit(.{ .map = try std.mem.concat(a, c.cbor.Entry, &.{ &.{.{ .key = "event", .value = .{ .text = name } }}, fields }) });
+}
+
+fn emitReverted(a: Allocator, svc: *Service, name: []const u8) !void {
+    try emitFact(a, svc, name, &.{.{ .key = "reverted", .value = .{ .boolean = true } }});
+}
+
 // ---------------------------------------------------------------- the counters (0.17.0)
 
 /// The time of the step whose hook this call runs in (ms): the in-VM call input's `now` (skein
-/// docs/VM.md, "call"; replay-exact), set by `run` before the hook; a burn row's `at`.
+/// docs/VM.md, "call"; replay-exact), set by `run` before the hook; a burn's `at`.
 pub var now_ms: u64 = 0;
 
 /// A token's counters (the record under `counters`).
@@ -236,7 +295,7 @@ fn putCounters(a: Allocator, svc: *Service, tk: []const u8, n: Counters) !void {
     try svc.map("counters").put(tk, .{ .bytes = try cat(a, &.{ &be64(n.supply), &be64(n.authorities), &be64(n.burned), &be64(n.burns) }) });
 }
 
-/// An output of `tk` entering (`enter`) or leaving its index: `supply` by a value output's amount,
+/// An output of `tk` entering (`enter`) or leaving: `supply` by a value output's amount,
 /// `authorities` by one for an authority output.
 fn counted(a: Allocator, svc: *Service, tk: []const u8, kind: Kind, amount: u64, enter: bool) !void {
     var n = try countersOf(svc, tk);
@@ -247,66 +306,41 @@ fn counted(a: Allocator, svc: *Service, tk: []const u8, kind: Kind, amount: u64,
     try putCounters(a, svc, tk, n);
 }
 
-/// Output `vout` of `t` (txid `txid`) of `kind` entering or leaving its index: its holding (a value
-/// output's P2PKH address) and the counters.
-fn outputMoved(a: Allocator, svc: *Service, id: bsv21.TokenId, txid: [32]u8, t: c.bsvz.transaction.Transaction, vout: u32, kind: Kind, enter: bool) !void {
+/// Output `vout` of `t` (txid `txid`) entering or leaving: its holding (a value output's P2PKH
+/// address) and the counters. Nothing for an output that is not the token's (or a burn).
+fn outputMoved(a: Allocator, svc: *Service, id: bsv21.TokenId, txid: [32]u8, t: c.bsvz.transaction.Transaction, vout: u32, enter: bool) !void {
     const f = (try filedOf(a, id, txid, t, vout)) orelse return;
-    if (kind == .value) try holdingMoved(a, svc, id, txid, t, vout, enter);
-    try counted(a, svc, &tokKey(id), kind, f.amount, enter);
+    if (f.kind == .value) try holdingMoved(a, svc, id, txid, t, vout, enter);
+    try counted(a, svc, &tokKey(id), f.kind, f.amount, enter);
 }
 
 /// The same, for an output read from the store by its txid (a spent or given-back previous coin).
-fn storedMoved(a: Allocator, svc: *Service, id: bsv21.TokenId, txid: [32]u8, vout: u32, kind: Kind, enter: bool) !void {
-    const raw = svc.store.tryGet(a, &c.store.hashCid(.tx, txid)) orelse return;
-    const t = c.bsvz.transaction.Transaction.parse(a, raw) catch return;
-    try outputMoved(a, svc, id, txid, t, vout, kind, enter);
+fn storedMoved(a: Allocator, svc: *Service, id: bsv21.TokenId, txid: [32]u8, vout: u32, enter: bool) !void {
+    const t = storedTx(a, svc.store, txid) orelse return;
+    try outputMoved(a, svc, id, txid, t, vout, enter);
 }
 
 /// The amount of the value output `vout` of the stored transaction `txid`, 0 when not held or not one.
 fn storedAmount(a: Allocator, id: bsv21.TokenId, s: c.store.Store, txid: [32]u8, vout: u32) !u64 {
-    const raw = s.tryGet(a, &c.store.hashCid(.tx, txid)) orelse return 0;
-    const t = c.bsvz.transaction.Transaction.parse(a, raw) catch return 0;
+    const t = storedTx(a, s, txid) orelse return 0;
     const f = (try filedOf(a, id, txid, t, vout)) orelse return 0;
     return f.amount;
 }
 
-fn burnKey(a: Allocator, tk: []const u8, txid: [32]u8) ![]u8 {
-    return cat(a, &.{ tk, &txid });
-}
-
-/// The event name of a burn (0.17.0): one event for its kinds, `burn` and `revert`.
-pub const burn_event = "burn";
-
-/// `{event: "burn", topic: "ls_color_<tokenId>", tokenId, row: {kind, txid, amount, at}}`.
-fn emitBurn(a: Allocator, svc: *Service, id: bsv21.TokenId, kind: []const u8, txid: [32]u8, amount: u64) !void {
-    const nid: color.name.TokenId = .{ .txid = id.txid, .vout = id.vout, .kind = if (id.kind == .native) .native else .legacy };
-    var tb: [color.name.max_suffix_len]u8 = undefined;
-    var lb: [color.name.max_lookup_len]u8 = undefined;
-    const row: Value = .{ .map = try a.dupe(c.cbor.Entry, &.{
-        .{ .key = "kind", .value = .{ .text = kind } },
-        .{ .key = "txid", .value = .{ .text = try a.dupe(u8, &c.header.toHex(txid)) } },
-        .{ .key = "amount", .value = .{ .uint = amount } },
-        .{ .key = "at", .value = .{ .uint = now_ms } },
-    }) };
-    try svc.emit(.{ .map = try a.dupe(c.cbor.Entry, &.{
-        .{ .key = "event", .value = .{ .text = burn_event } },
-        .{ .key = "topic", .value = .{ .text = try a.dupe(u8, color.name.lookupName(&lb, nid)) } },
-        .{ .key = "tokenId", .value = .{ .text = try a.dupe(u8, color.name.tokenIdText(&tb, nid)) } },
-        .{ .key = "row", .value = row },
-    }) });
-}
-
-/// Whether `tx` burns token `id` (`tk`): its consumed value inputs — the token's value outputs this
-/// index filed, unspent or spent by `tx` itself (a dupe hook call) — carry more than its admitted
-/// value outputs; the difference written once (`burns`), counted and emitted.
+/// Whether `tx` burns token `id` (`tk`): its consumed value inputs — the token's outputs the overlay
+/// has admitted, unspent or spent by `tx` itself (a dupe hook call) — carry more than its admitted
+/// value outputs; the difference counted once (the burn's fact not yet standing) and emitted.
 fn burnCheck(a: Allocator, svc: *Service, id: bsv21.TokenId, tk: []const u8, tx: lookup.Tx, outputs_to_admit: []const u32) !void {
     var in_sum: u128 = 0;
     for (tx.tx.inputs) |in| {
-        const v = (try svc.map("outputs").get(&opKey(in.previous_outpoint.txid.bytes, in.previous_outpoint.index))) orelse continue;
-        const e = try entryOf(v);
-        if (e.kind != .value or !eql(u8, e.tok, tk)) continue;
-        if (e.spender) |by| if (!eql(u8, by, &tx.txid)) continue;
-        in_sum += try storedAmount(a, id, svc.store, in.previous_outpoint.txid.bytes, in.previous_outpoint.index);
+        const po = in.previous_outpoint;
+        const f = (try outputFact(a, po.txid.bytes, po.index)) orelse continue;
+        switch (f.state) {
+            .admitted => {},
+            .spent => if (f.spent_by == null or !eql(u8, &f.spent_by.?, &tx.txid)) continue,
+            .reverted => continue,
+        }
+        in_sum += try storedAmount(a, id, svc.store, po.txid.bytes, po.index);
     }
     if (in_sum == 0) return;
     var out_sum: u128 = 0;
@@ -315,29 +349,32 @@ fn burnCheck(a: Allocator, svc: *Service, id: bsv21.TokenId, tk: []const u8, tx:
         out_sum += f.amount;
     }
     if (in_sum <= out_sum) return;
-    const bk = try burnKey(a, tk, tx.txid);
-    if (try svc.map("burns").has(bk)) return;
+    const name = try burnName(a, tx.txid);
+    if (try latestOf(a, name)) |r| if (!isReverted(r)) return;
     const amount: u64 = std.math.cast(u64, in_sum - out_sum) orelse std.math.maxInt(u64);
-    try svc.map("burns").put(bk, .{ .bytes = try cat(a, &.{ &be64(amount), &be64(now_ms) }) });
     var n = try countersOf(svc, tk);
     n.burned = std.math.add(u64, n.burned, amount) catch std.math.maxInt(u64);
     n.burns += 1;
     try putCounters(a, svc, tk, n);
-    try emitBurn(a, svc, id, "burn", tx.txid, amount);
+    try emitFact(a, svc, name, &.{
+        .{ .key = "tokenId", .value = .{ .text = try tokenIdTextAlloc(a, id) } },
+        .{ .key = "amount", .value = .{ .uint = amount } },
+        .{ .key = "at", .value = .{ .uint = now_ms } },
+    });
 }
 
-/// A rejected `tx`'s burn, unwound: its row gone, the total debited, a `revert` emitted.
+/// A rejected `tx`'s burn, unwound: the total debited by the amount its fact carries, `{reverted: true}` emitted.
 fn burnUndo(a: Allocator, svc: *Service, id: bsv21.TokenId, tk: []const u8, txid: [32]u8) !void {
-    const bk = try burnKey(a, tk, txid);
-    const v = (try svc.map("burns").get(bk)) orelse return;
-    if (v != .bytes or v.bytes.len != 16) return error.BadIndex;
-    const amount = std.mem.readInt(u64, v.bytes[0..8], .big);
-    _ = try svc.map("burns").remove(bk);
+    const name = try burnName(a, txid);
+    const r = (try latestOf(a, name)) orelse return;
+    if (isReverted(r)) return;
+    if (!eql(u8, r.getText("tokenId") orelse "", try tokenIdTextAlloc(a, id))) return;
+    const amount = r.getUint("amount") orelse return error.BadEvents;
     var n = try countersOf(svc, tk);
     n.burned -|= amount;
     n.burns -|= 1;
     try putCounters(a, svc, tk, n);
-    try emitBurn(a, svc, id, "revert", txid, amount);
+    try emitReverted(a, svc, name);
 }
 
 // ---------------------------------------------------------------- the balance table (0.15.0)
@@ -353,7 +390,7 @@ fn p2pkhOf(lock: []const u8) ?[20]u8 {
 /// and nothing on the other); null for any other output.
 pub fn holdingOf(a: Allocator, id: bsv21.TokenId, txid: [32]u8, vout: u32, script: []const u8) !?struct { pkh: [20]u8, amount: u64 } {
     const t = (try bsv21.tokenOf(a, id, txid, vout, script)) orelse return null;
-    // A value output as `kindOf` files it (0.15.1: a supply-holding deploy is one).
+    // A value output as `filedOf` files it (0.15.1: a supply-holding deploy is one).
     if (t.amount == 0 or t.authority or !(t.role == .value or t.role == .deploy)) return null;
     const pkh = switch (t.form) {
         .binary => p2pkhOf(t.binary.?.lock),
@@ -398,15 +435,14 @@ fn adjust(a: Allocator, svc: *Service, tk: []const u8, pkh: [20]u8, amount: u64,
     }
 }
 
-/// The output `vout` of `t` (txid `txid`) entering (`credit`) or leaving `values`: its holding, if any, adjusted.
+/// The output `vout` of `t` (txid `txid`) entering (`credit`) or leaving: its holding, if any, adjusted.
 fn holdingMoved(a: Allocator, svc: *Service, id: bsv21.TokenId, txid: [32]u8, t: c.bsvz.transaction.Transaction, vout: u32, credit: bool) !void {
     if (vout >= t.outputs.len) return;
     const h = (try holdingOf(a, id, txid, vout, t.outputs[vout].locking_script.bytes)) orelse return;
     try adjust(a, svc, &tokKey(id), h.pkh, h.amount, credit);
 }
 
-
-// ---------------------------------------------------------------- the symbol index (0.16.0)
+// ---------------------------------------------------------------- the symbol facts (0.16.0; events 0.18.0)
 
 /// A deploy's display symbol from its output (a binary deploy's payload `sym`, a BRC-161 JSON
 /// deploy's `sym`), "" when it carries none; null when the output is no deploy of `id`.
@@ -419,157 +455,79 @@ pub fn symOfDeploy(a: Allocator, id: bsv21.TokenId, txid: [32]u8, vout: u32, scr
     };
 }
 
-/// The `symbols` row of a deploy: its symbol ASCII lower-cased ‖ its token key; null when it has no symbol.
-fn symbolKey(a: Allocator, id: bsv21.TokenId, txid: [32]u8, vout: u32, script: []const u8) !?[]const u8 {
+/// A deploy's symbol fact name, null when it has no symbol.
+fn deploySymbolName(a: Allocator, id: bsv21.TokenId, txid: [32]u8, vout: u32, script: []const u8) !?[]const u8 {
     const sym = (try symOfDeploy(a, id, txid, vout, script)) orelse return null;
     if (sym.len == 0) return null;
-    return try cat(a, &.{ try std.ascii.allocLowerString(a, sym), &tokKey(id) });
+    return try symbolName(a, sym, txid, vout);
 }
 
 // The hooks come once per admitted transaction and topic, under whichever of the program's names
-// listens first (skein-overlay 0.11.0): they go by the topic, never by the name.
+// listens first (skein-overlay 0.11.0): they go by the topic, never by the name. Every prior fact
+// they read is an earlier step's (an in-step read does not see the step's own emits, skein
+// docs/VM.md): the overlay emits this admission's `topic/output` facts after the hooks.
 
 fn admitted(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx, outputs_to_admit: []const u32, _: []const u32) anyerror!void {
     if (eql(u8, topic, deploys_topic)) {
         for (outputs_to_admit) |vout| {
             if (vout >= tx.tx.outputs.len) return error.BadArgs;
-            const id = (try token.deployOf(a, tx.txid, vout, tx.tx.outputs[vout].locking_script.bytes)) orelse continue;
-            try svc.map("deploys").add(&tokKey(id));
-            if (try symbolKey(a, id, tx.txid, vout, tx.tx.outputs[vout].locking_script.bytes)) |k| try svc.map("symbols").add(k);
+            const script = tx.tx.outputs[vout].locking_script.bytes;
+            const id = (try token.deployOf(a, tx.txid, vout, script)) orelse continue;
+            const name = (try deploySymbolName(a, id, tx.txid, vout, script)) orelse continue;
+            if (try latestOf(a, name)) |r| if (!isReverted(r)) continue;
+            try emitFact(a, svc, name, &.{.{ .key = "tokenId", .value = .{ .text = try tokenIdTextAlloc(a, id) } }});
         }
         return;
     }
     const id = token.tokenIdOf(topic) orelse return;
     const tk = tokKey(id);
-    // 0.17.0: before the outputs are filed, while the inputs it consumes are still unspent here.
+    // 0.17.0: before the outputs are counted, while the inputs it consumes still stand admitted.
     try burnCheck(a, svc, id, &tk, tx, outputs_to_admit);
     for (outputs_to_admit) |vout| {
         if (vout >= tx.tx.outputs.len) return error.BadArgs;
-        try svc.map("admitted").add(try cat(a, &.{ &tk, &opKey(tx.txid, vout) }));
-        const k = (try kindOf(a, id, tx, vout)) orelse continue;
-        const op = opKey(tx.txid, vout);
-        try svc.map("outputs").put(&op, .{ .bytes = try cat(a, &.{ &.{@intFromEnum(k)}, &tk }) });
-        const ik = try cat(a, &.{ &tk, &op });
-        // 0.15.0: an output new to its index credits its holding; 0.17.0: and the counters (a dupe
-        // hook call credits nothing).
-        if (!(try svc.map(indexName(k)).has(ik))) try outputMoved(a, svc, id, tx.txid, tx.tx, vout, k, true);
-        try svc.map(indexName(k)).add(ik);
+        _ = (try kindOf(a, id, tx, vout)) orelse continue;
+        // Already credited when the overlay has it standing (a dupe hook call credits nothing).
+        if (standing(try outputFact(a, tx.txid, vout))) continue;
+        try outputMoved(a, svc, id, tx.txid, tx.tx, vout, true);
     }
 }
 
-/// An `outputs` entry: its kind, its token key, its spender if spent.
-const Entry = struct { kind: Kind, tok: []const u8, spender: ?[]const u8 };
-
-fn entryOf(v: c.store.MValue) !Entry {
-    if (v != .bytes or (v.bytes.len != 37 and v.bytes.len != 69) or v.bytes[0] > 1) return error.BadIndex;
-    return .{ .kind = @enumFromInt(v.bytes[0]), .tok = v.bytes[1..37], .spender = if (v.bytes.len == 69) v.bytes[37..69] else null };
-}
-
-fn spent(a: Allocator, svc: *Service, topic: []const u8, outpoint: lookup.Outpoint, spending: lookup.Tx) anyerror!void {
+fn spent(a: Allocator, svc: *Service, topic: []const u8, outpoint: lookup.Outpoint, _: lookup.Tx) anyerror!void {
     if (eql(u8, topic, deploys_topic)) return; // a registry: a deploy stays listed once spent
     const id = token.tokenIdOf(topic) orelse return;
-    const op = opKey(outpoint.txid, outpoint.vout);
-    const v = (try svc.map("outputs").get(&op)) orelse return; // not one it indexed
-    const e = try entryOf(v);
-    if (e.spender != null) return;
-    if (try svc.map(indexName(e.kind)).remove(try cat(a, &.{ e.tok, &op })))
-        try storedMoved(a, svc, id, outpoint.txid, outpoint.vout, e.kind, false);
-    try svc.map("outputs").put(&op, .{ .bytes = try cat(a, &.{ v.bytes, &spending.txid }) });
+    // Debited once: only while the overlay has it admitted and not yet spent.
+    const f = (try outputFact(a, outpoint.txid, outpoint.vout)) orelse return;
+    if (f.state != .admitted) return;
+    try storedMoved(a, svc, id, outpoint.txid, outpoint.vout, false);
 }
 
 fn rejected(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx) anyerror!void {
     if (eql(u8, topic, deploys_topic)) {
         for (tx.tx.outputs, 0..) |o, vout| {
             const id = (try token.deployOf(a, tx.txid, @intCast(vout), o.locking_script.bytes)) orelse continue;
-            _ = try svc.map("deploys").remove(&tokKey(id));
-            if (try symbolKey(a, id, tx.txid, @intCast(vout), o.locking_script.bytes)) |k| _ = try svc.map("symbols").remove(k);
+            const name = (try deploySymbolName(a, id, tx.txid, @intCast(vout), o.locking_script.bytes)) orelse continue;
+            const r = (try latestOf(a, name)) orelse continue;
+            if (!isReverted(r)) try emitReverted(a, svc, name);
         }
         return;
     }
     const id = token.tokenIdOf(topic) orelse return;
     // 0.17.0: its burn, if it burned.
     try burnUndo(a, svc, id, &tokKey(id), tx.txid);
-    // Its outputs vanish: never validly admitted (BRC-207 admission).
-    for (0..tx.tx.outputs.len) |vout| _ = try svc.map("admitted").remove(try cat(a, &.{ &tokKey(id), &opKey(tx.txid, @intCast(vout)) }));
+    // Its outputs still unspent leave (a spent one was debited by its spender).
     for (0..tx.tx.outputs.len) |vout| {
-        const op = opKey(tx.txid, @intCast(vout));
-        const v = (try svc.map("outputs").get(&op)) orelse continue;
-        const e = try entryOf(v);
-        if (try svc.map(indexName(e.kind)).remove(try cat(a, &.{ e.tok, &op })))
-            try outputMoved(a, svc, id, tx.txid, tx.tx, @intCast(vout), e.kind, false);
-        _ = try svc.map("outputs").remove(&op);
+        const f = (try outputFact(a, tx.txid, @intCast(vout))) orelse continue;
+        if (f.state == .admitted) try outputMoved(a, svc, id, tx.txid, tx.tx, @intCast(vout), false);
     }
     // What it spent is unspent again.
     for (tx.tx.inputs) |in| {
-        const op = opKey(in.previous_outpoint.txid.bytes, in.previous_outpoint.index);
-        const v = (try svc.map("outputs").get(&op)) orelse continue;
-        const e = try entryOf(v);
-        const by = e.spender orelse continue;
-        if (!eql(u8, by, &tx.txid)) continue;
-        try svc.map("outputs").put(&op, .{ .bytes = try a.dupe(u8, v.bytes[0..37]) });
-        const ik = try cat(a, &.{ e.tok, &op });
-        if (!(try svc.map(indexName(e.kind)).has(ik))) try storedMoved(a, svc, id, in.previous_outpoint.txid.bytes, in.previous_outpoint.index, e.kind, true);
-        try svc.map(indexName(e.kind)).add(ik);
+        const po = in.previous_outpoint;
+        const f = (try outputFact(a, po.txid.bytes, po.index)) orelse continue;
+        if (f.state != .spent) continue;
+        const by = f.spent_by orelse continue;
+        if (!eql(u8, &by, &tx.txid)) continue;
+        try storedMoved(a, svc, id, po.txid.bytes, po.index, true);
     }
-}
-
-const allowed = [_][]const u8{ "tokenId", "authoritiesTokenId", "txid", "outputIndex", "limit", "skip" };
-
-/// An integer field in [lo, hi], `default` when absent.
-fn intField(q: Value, key: []const u8, default: u64, lo: u64, hi: u64) !u64 {
-    const v = q.get(key) orelse return default;
-    if (v != .uint or v.uint < lo or v.uint > hi) return error.BadQuery;
-    return v.uint;
-}
-
-fn tokenField(q: Value, key: []const u8) !?bsv21.TokenId {
-    const v = q.get(key) orelse return null;
-    if (v != .text) return error.BadQuery;
-    return token.tokenIdOfString(v.text) orelse error.BadQuery;
-}
-
-/// The query, checked: every key one of the six, every value its shape.
-pub const Query = union(enum) {
-    values: struct { id: bsv21.TokenId, limit: u64, skip: u64 },
-    authorities: struct { id: bsv21.TokenId, limit: u64, skip: u64 },
-    outpoint: lookup.Output,
-};
-
-pub fn parseQuery(q: Value) !Query {
-    if (q != .map) return error.BadQuery;
-    for (q.map) |e| {
-        for (allowed) |k| {
-            if (eql(u8, e.key, k)) break;
-        } else return error.BadQuery;
-    }
-    const auth = try tokenField(q, "authoritiesTokenId");
-    const tok = try tokenField(q, "tokenId");
-    const limit = try intField(q, "limit", max_limit, 1, max_limit);
-    const skip = try intField(q, "skip", 0, 0, max_skip);
-    var txid: ?[32]u8 = null;
-    if (q.get("txid")) |t| {
-        if (t != .text or t.text.len != 64) return error.BadQuery;
-        txid = c.header.fromHex(t.text) catch return error.BadQuery;
-    }
-    const vout: ?u64 = if (q.get("outputIndex")) |_| try intField(q, "outputIndex", 0, 0, std.math.maxInt(u32)) else null;
-    if (auth) |id| return .{ .authorities = .{ .id = id, .limit = limit, .skip = skip } };
-    if (tok) |id| return .{ .values = .{ .id = id, .limit = limit, .skip = skip } };
-    if (txid != null and vout != null) return .{ .outpoint = .{ .txid = txid.?, .vout = @intCast(vout.?) } };
-    return error.UnsupportedQuery;
-}
-
-fn page(a: Allocator, svc: *Service, index: []const u8, id: bsv21.TokenId, limit: u64, skip: u64) ![]const lookup.Output {
-    const tk = tokKey(id);
-    const all = try svc.map(index).prefixed(&tk);
-    const from: usize = @intCast(skip);
-    if (from >= all.len) return &.{};
-    const to = @min(all.len, from + @as(usize, @intCast(limit)));
-    const out = try a.alloc(lookup.Output, to - from);
-    for (all[from..to], out) |kv, *o| {
-        if (kv.key.len != 72) return error.BadIndex;
-        o.* = opOf(kv.key[36..]);
-    }
-    return out;
 }
 
 // ---------------------------------------------------------------- BRC-207 (ls_color_<assetId>)
@@ -640,37 +598,54 @@ pub fn parse207(a: Allocator, service: []const u8, q: Value) !Brc207 {
     return .{ .kind = kind, .id = id, .outpoints = out.items, .discovery = discovery };
 }
 
-/// A BRC-207 answer: of the queried outpoints, those the asset's topic validly admitted (`admitted`)
-/// and, for spendability, that the chain state names no spender for (as the engine's `inTopic`).
+/// A BRC-207 answer: of the queried outpoints, those the overlay has admitted (the latest
+/// `<app>/topic/output/<op>` fact not `reverted`) that are the asset's by their stored transaction
+/// (the fact's name carries no topic: on an instance serving several, the token is read from the
+/// output), and, for spendability, that the chain state names no spender for (skein-chain 0.9.0
+/// `spentBy`; `chain/output/<op>` once skein-chain 0.10.0 posts it).
 pub fn answer207(a: Allocator, svc: *Service, ch: *lookup.Chain, q: Brc207) ![]const lookup.Output {
     const tk = tokKey(q.id);
     var out: std.ArrayList(lookup.Output) = .empty;
     for (q.outpoints) |o| {
-        const op = opKey(o.txid, o.vout);
         if (q.discovery) {
             // The discovery topic admits a token's deploy output, at the token id's outpoint.
-            if (!eql(u8, &op, &tk) or !(try svc.map("deploys").has(&tk))) continue;
-        } else if (!(try svc.map("admitted").has(try cat(a, &.{ &tk, &op })))) continue;
-        if (q.kind == .spendability and (try ch.spentBy(o.txid, o.vout)) != null) continue;
+            if (!eql(u8, &opKey(o.txid, o.vout), &tk)) continue;
+        }
+        if (!standing(try outputFact(a, o.txid, o.vout))) continue;
+        if (!(try isAssetOutput(a, svc.store, q.id, o, q.discovery))) continue;
+        if (q.kind == .spendability and (try spentByChain(ch, o)) != null) continue;
         try out.append(a, o);
     }
     return out.items;
 }
 
+/// Whether output `o` is token `id`'s by its stored transaction: any of its outputs (BSV-21
+/// `tokenOf`), or (`deploy`) its deploy.
+fn isAssetOutput(a: Allocator, s: c.store.Store, id: bsv21.TokenId, o: lookup.Output, deploy: bool) !bool {
+    const t = storedTx(a, s, o.txid) orelse return false;
+    if (o.vout >= t.outputs.len) return false;
+    const script = t.outputs[o.vout].locking_script.bytes;
+    if (deploy) {
+        const d = (try token.deployOf(a, o.txid, o.vout, script)) orelse return false;
+        return eql(u8, &d.txid, &id.txid) and d.vout == id.vout;
+    }
+    return (try bsv21.tokenOf(a, id, o.txid, o.vout, script)) != null;
+}
+
+/// SEAM (skein-chain 0.10.0): the output's spender as the chain state names it today (the lowest-txid
+/// non-rejected held spender, skein-sdk 0.18.0 `State.spentBy`); to read `chain/output/<op>` latest
+/// ("spent by T") when that is posted.
+fn spentByChain(ch: *lookup.Chain, o: lookup.Output) !?[32]u8 {
+    return ch.spentBy(o.txid, o.vout);
+}
+
+/// BRC-207's queries, and nothing else (0.18.0: the freeform queries are gone).
 pub fn answer(a: Allocator, svc: *Service, ch: *lookup.Chain, query: Value) anyerror!lookup.Answer {
     if (color.name.tokenIdOfLookup(svc.name) != null) return .{ .output_list = try answer207(a, svc, ch, try parse207(a, svc.name, query)) };
     if (!eql(u8, svc.name, service_name)) return error.UnknownService;
     // BRC-207's query over the discovery topic (0.12.1: it carries a `type`).
     if (query == .map and query.get("type") != null) return .{ .output_list = try answer207(a, svc, ch, try parse207(a, svc.name, query)) };
-    switch (try parseQuery(query)) {
-        .values => |p| return .{ .output_list = try page(a, svc, "values", p.id, p.limit, p.skip) },
-        .authorities => |p| return .{ .output_list = try page(a, svc, "authorities", p.id, p.limit, p.skip) },
-        .outpoint => |o| {
-            const v = (try svc.map("outputs").get(&opKey(o.txid, o.vout))) orelse return .{ .output_list = &.{} };
-            if ((try entryOf(v)).spender != null) return .{ .output_list = &.{} };
-            return .{ .output_list = try a.dupe(lookup.Output, &.{o}) };
-        },
-    }
+    return error.BadQuery;
 }
 
 pub fn metadata(a: Allocator, service: []const u8) anyerror!lookup.Metadata {
@@ -683,7 +658,7 @@ pub fn metadata(a: Allocator, service: []const u8) anyerror!lookup.Metadata {
         };
     }
     return .{
-        .short_description = "1Color (BRC-162; BRC-207) token outputs: a token's unspent value outputs, its authority outputs, one output by outpoint; over the discovery topic tm_color, BRC-207's color-admission and color-spendability of a token's deploy.",
+        .short_description = "1Color (BRC-162; BRC-207): over the discovery topic tm_color, BRC-207's color-admission and color-spendability of a token's deploy.",
         .version = version,
         .information_url = "https://github.com/shruggr/skein-1color",
     };
@@ -719,29 +694,17 @@ pub fn documentation(_: Allocator, service: []const u8) anyerror![]const u8 {
     return
     \\# 1Color token lookup service (ls_color)
     \\
-    \\Indexes the outputs the topics that feed it admit: a token topic's (`tm_color_<txid>_<vout>`,
-    \\BRC-207) by token id and outpoint, the discovery topic's (`tm_color`) deploys by token id. A token id is the deploy outpoint, the txid in display byte order,
-    \\lowercase, written `<txid>_<vout>` for every token, `<txid>_0` included (BRC-162 "Token
-    \\identification": the bare 32-byte txid is the wire form only). A query takes any of
-    \\`<txid>`, `<txid>_<vout>`, `<txid>.<vout>`.
+    \\Over the discovery topic `tm_color`, every token's deploy output. A token id is the deploy
+    \\outpoint, the txid in display byte order, lowercase, written `<txid>_<vout>` for every token,
+    \\`<txid>_0` included (BRC-162 "Token identification": the bare 32-byte txid is the wire form only).
     \\
     \\## Queries
     \\
-    \\The first key present, in this order, answers:
-    \\
-    \\- `{ authoritiesTokenId, limit?, skip? }`: the token's unspent authority outputs
-    \\  (an authority-only deploy among them), in outpoint order.
-    \\- `{ tokenId, limit?, skip? }`: the token's unspent value outputs (a deploy that carries
-    \\  the supply among them), in outpoint order.
-    \\- `{ txid, outputIndex }`: the value or authority output at that outpoint, if unspent.
-    \\- Over the discovery topic, BRC-207's query with `topic: "tm_color"` (a deploy's outpoint is
-    \\  its token id): `{ type: "color-admission" | "color-spendability", version: 1, assetId:
-    \\  "<txid>_<vout>", topic: "tm_color", outpoints: ["<txid>.<vout>"] }` answers the asset's
-    \\  deploy if `tm_color` admitted it (admission: spent or not; spendability: unspent).
-    \\
-    \\`limit` is 1 to 100 (default 100) and `skip` is 0 to 100000 (default 0). Anything
-    \\else is refused. Outpoint order is the txid in display order, then the output index.
-    \\Answers are output-lists, each output with its transaction's BEEF.
+    \\BRC-207's query with `topic: "tm_color"` (a deploy's outpoint is its token id): `{ type:
+    \\"color-admission" | "color-spendability", version: 1, assetId: "<txid>_<vout>", topic:
+    \\"tm_color", outpoints: ["<txid>.<vout>"] }` answers the asset's deploy if `tm_color` admitted it
+    \\(admission: spent or not; spendability: unspent). Anything else is refused. Answers are
+    \\output-lists, each output with its transaction's BEEF.
     \\
     \\## The token list (a read, not a query)
     \\
@@ -1054,26 +1017,26 @@ fn restrictedName(n: []const u8) bool {
 }
 
 /// The token list (shruggr/skein#120, decided 2026-10-06: a read function of the 1Color
-/// components, not a BRC-24 query): every deploy the discovery topic `tm_color` admitted (the
-/// map `deploys` of the program's index, its state record `deploys_state`), newest first by the
-/// chain state (`chain_state`; unmined first, then by block height and position, highest first),
-/// `skip` then `limit` of them. Reads only. (The `ids` form is `byIds`.)
+/// components, not a BRC-24 query): every deploy the discovery topic `tm_color` admitted — 0.18.0:
+/// the outputs whose latest `<app>/topic/output` fact is not `reverted` and that are deploys by
+/// their stored transaction (`deployOf`) — newest first by the chain state (`chain_state`; unmined
+/// first, then by block height and position, highest first), `skip` then `limit` of them. Reads
+/// only. (The `ids` form is `byIds`.) COST (plan M18): every `<app>/topic/output` name is read on
+/// each request (the event read pages by place, not by name).
 ///
 /// 0.16.0: a non-empty `q` lists only the tokens `searched` finds (the same rows, in the same order);
 /// `after` only the rows strictly after that token in the order (its own place read from the chain
-/// state by its key, never by walking the list), error.UnknownAfter when the discovery topic admitted
-/// no such deploy.
-pub fn tokens(a: Allocator, s: c.store.Store, deploys_state: ?[]const u8, chain_state: ?[]const u8, overlay_state: ?[]const u8, q: TokensQuery) ![]const Listed {
-    var svc = try Service.loadIndex(a, s, service_name, index_name, spec.maps, deploys_state);
+/// state by its key), error.UnknownAfter when the discovery topic admitted no such deploy.
+pub fn tokens(a: Allocator, s: c.store.Store, _: ?[]const u8, chain_state: ?[]const u8, overlay_state: ?[]const u8, q: TokensQuery) ![]const Listed {
     var placed = try Placed.load(a, s, overlay_state);
     // The chain app's state through the SDK's one opener (shruggr/skein-sdk#1): its record's network, else main.
     var ch = try c.open(a, s, chain_state, .main);
     const after: ?Age = if (q.after) |t| blk: {
         const key = try a.dupe(u8, &(tokenKeyOf(t) orelse return error.BadQuery));
-        if (!(try svc.map("deploys").has(key))) return error.UnknownAfter;
+        if (!(try isListed(a, s, key))) return error.UnknownAfter;
         break :blk try ageOf(&ch, key);
     } else null;
-    const keys: []const []const u8 = if (q.q) |text| (if (text.len > 0) try searched(a, &svc, text) else try allDeploys(a, &svc)) else try allDeploys(a, &svc);
+    const keys: []const []const u8 = if (q.q) |text| (if (text.len > 0) try searched(a, text) else try allDeploys(a)) else try allDeploys(a);
     var ages: std.ArrayList(Age) = .empty;
     for (keys) |k| {
         if (k.len != 36) return error.BadIndex;
@@ -1098,78 +1061,64 @@ pub fn tokens(a: Allocator, s: c.store.Store, deploys_state: ?[]const u8, chain_
     return out.items;
 }
 
-fn allDeploys(a: Allocator, svc: *Service) ![]const []const u8 {
-    const all = try svc.map("deploys").prefixed(&.{});
-    const keys = try a.alloc([]const u8, all.len);
-    for (all, keys) |kv, *k| k.* = kv.key;
-    return keys;
+/// Whether the deploy at `key` (txid display ‖ vout BE) is on the list: the overlay has it admitted
+/// and its stored output is a deploy.
+fn isListed(a: Allocator, s: c.store.Store, key: []const u8) !bool {
+    const op = opOf(key);
+    if (!standing(try outputFact(a, op.txid, op.vout))) return false;
+    const t = storedTx(a, s, op.txid) orelse return false;
+    if (op.vout >= t.outputs.len) return false;
+    return (try token.deployOf(a, op.txid, op.vout, t.outputs[op.vout].locking_script.bytes)) != null;
 }
 
-/// The token keys `q` finds (0.16.0), possibly one twice: the `symbols` rows under `q` lower-cased
-/// whose symbol starts with it, and the `deploys` keys whose token id text `<txid>_<vout>` starts
-/// with `q` — read by the key range its leading lower-case hex digits span (up to 64), never every
-/// token.
-pub fn searched(a: Allocator, svc: *Service, q: []const u8) ![]const []const u8 {
+/// The keys of the outputs whose latest fact under `prefix` (a `<app>/topic/output/…` prefix) is not
+/// `reverted`, in name order; a row that is no deploy is dropped by the reader (`listedOf`).
+fn standingUnder(a: Allocator, prefix: []const u8) ![]const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
-    const lower = try std.ascii.allocLowerString(a, q);
-    for (try svc.map("symbols").prefixed(lower)) |kv| {
-        if (kv.key.len <= 36) return error.BadIndex;
-        const sym = kv.key[0 .. kv.key.len - 36];
-        if (std.mem.startsWith(u8, sym, lower)) try out.append(a, kv.key[kv.key.len - 36 ..]);
-    }
-    // The id side: the txid's hex digits `q` begins with, as a range of deploy keys.
-    const n = @min(q.len, 64);
-    for (q[0..n]) |ch| if (!(std.ascii.isDigit(ch) or (ch >= 'a' and ch <= 'f'))) return out.items;
-    var lo: [33]u8 = undefined;
-    _ = std.fmt.hexToBytes(lo[0 .. n / 2], q[0 .. n / 2 * 2]) catch return out.items;
-    var len = n / 2;
-    if (n % 2 == 1) {
-        lo[len] = (std.fmt.charToDigit(q[n - 1], 16) catch unreachable) << 4;
-        len += 1;
-    }
-    const m = svc.map("deploys");
-    var hb: [33]u8 = undefined;
-    const hi = upper(&hb, lo[0..len], n % 2 == 1);
-    const rows = if (hi) |h| try m.range(lo[0..len], h) else try m.from(lo[0..len]);
-    for (rows) |kv| {
-        if (kv.key.len != 36) return error.BadIndex;
-        const text = try std.fmt.allocPrint(a, "{s}_{d}", .{ &std.fmt.bytesToHex(kv.key[0..32].*, .lower), std.mem.readInt(u32, kv.key[32..36], .big) });
-        if (std.mem.startsWith(u8, text, q)) try out.append(a, kv.key);
+    for (try latestUnder(a, prefix)) |f| {
+        const o = outpointOfName(f.name) orelse return error.BadEvents;
+        if (!standing(try outputFactOf(f.record))) continue;
+        try out.append(a, try a.dupe(u8, &opKey(o.txid, o.vout)));
     }
     return out.items;
 }
 
-/// The first key past every key `lo` begins (`nibble`: its last byte's low nibble free); null: none.
-fn upper(buf: []u8, lo: []const u8, nibble: bool) ?[]const u8 {
-    var n = lo.len;
-    @memcpy(buf[0..n], lo);
-    if (nibble) {
-        if (buf[n - 1] < 0xf0) {
-            buf[n - 1] += 0x10;
-            return buf[0..n];
-        }
-        n -= 1;
+fn allDeploys(a: Allocator) ![]const []const u8 {
+    return standingUnder(a, try std.fmt.allocPrint(a, "{s}/topic/output/", .{app_name}));
+}
+
+/// The token keys `q` finds (0.16.0), possibly one twice: the deploys whose symbol starts with `q`
+/// (ASCII case-insensitively; the symbol facts `<app>/color/symbol/<hex(lower sym)>/…` under the
+/// prefix of `q` lower-cased, not reverted), and the deploys whose token id text `<txid>_<vout>`
+/// starts with `q` (the `<app>/topic/output/<hex>` names under `q`'s leading lower-case hex digits,
+/// up to 64).
+pub fn searched(a: Allocator, q: []const u8) ![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    const lower = try std.ascii.allocLowerString(a, q);
+    for (try latestUnder(a, try symbolPrefix(a, lower))) |f| {
+        if (isReverted(f.record)) continue;
+        const o = outpointOfName(f.name) orelse return error.BadEvents;
+        try out.append(a, try a.dupe(u8, &opKey(o.txid, o.vout)));
     }
-    while (n > 0) {
-        if (buf[n - 1] != 0xff) {
-            buf[n - 1] += 1;
-            return buf[0..n];
-        }
-        n -= 1;
+    // The id side: the txid's hex digits `q` begins with, as a prefix of the output facts' names.
+    const n = @min(q.len, 64);
+    for (q[0..n]) |ch| if (!(std.ascii.isDigit(ch) or (ch >= 'a' and ch <= 'f'))) return out.items;
+    for (try standingUnder(a, try std.fmt.allocPrint(a, "{s}/topic/output/{s}", .{ app_name, q[0..n] }))) |k| {
+        const text = try std.fmt.allocPrint(a, "{s}_{d}", .{ &std.fmt.bytesToHex(k[0..32].*, .lower), std.mem.readInt(u32, k[32..36], .big) });
+        if (std.mem.startsWith(u8, text, q)) try out.append(a, k);
     }
-    return null;
+    return out.items;
 }
 
 /// The `ids` form (0.14.0, D17): one row per id in the query's order, the token as listed when the
 /// discovery topic admitted its deploy, else `{tokenId, listed: false}`.
-pub fn byIds(a: Allocator, s: c.store.Store, deploys_state: ?[]const u8, overlay_state: ?[]const u8, ids: []const []const u8) ![]const Row {
-    var svc = try Service.loadIndex(a, s, service_name, index_name, spec.maps, deploys_state);
+pub fn byIds(a: Allocator, s: c.store.Store, overlay_state: ?[]const u8, ids: []const []const u8) ![]const Row {
     var placed = try Placed.load(a, s, overlay_state);
     const out = try a.alloc(Row, ids.len);
     for (ids, out) |id, *r| {
         r.* = .{ .unknown = id };
         const key = tokenKeyOf(id) orelse continue;
-        if (!(try svc.map("deploys").has(&key))) continue;
+        if (!(try isListed(a, s, &key))) continue;
         if (try listedOf(a, s, &key, &placed)) |l| r.* = .{ .listed = l };
     }
     return out;
@@ -1210,7 +1159,7 @@ fn jsonOf(a: Allocator, v: anytype) ![]const u8 {
 pub fn tokensRoute(a: Allocator, s: c.store.Store, deploys_state: ?[]const u8, chain_state: ?[]const u8, overlay_state: ?[]const u8, req: Value) !Value {
     const q = parseTokensQuery(a, req.getText("query") orelse "", req.getBytes("body") orelse "") catch
         return respond(a, 400, "{\"status\":\"error\",\"message\":\"the query is {limit?: 1..100, skip?: 0..100000}, in the query string or a JSON body, with q=<text> (at most 100 bytes) and after=<txid>_<vout> (not beside skip) in the query string; or ids=<txid>_<vout>,… in the query string alone\"}");
-    const body = if (q.ids) |ids| try jsonOf(a, try byIds(a, s, deploys_state, overlay_state, ids)) else try jsonOf(a, tokens(a, s, deploys_state, chain_state, overlay_state, q) catch |e| switch (e) {
+    const body = if (q.ids) |ids| try jsonOf(a, try byIds(a, s, overlay_state, ids)) else try jsonOf(a, tokens(a, s, deploys_state, chain_state, overlay_state, q) catch |e| switch (e) {
         error.UnknownAfter => return respond(a, 400, "{\"status\":\"error\",\"message\":\"after: no such token on the list\"}"),
         else => return e,
     });
@@ -1272,7 +1221,7 @@ pub fn tokenRoute(a: Allocator, s: c.store.Store, deploys_state: ?[]const u8, ch
         const ch = try c.open(a, s, chain_state, .main);
         return respondWith(a, 200, "application/json", cache_state, try holdersJson(a, &svc, &tp.key, ch.network, hq));
     }
-    if (!(try svc.map("deploys").has(&tp.key))) return respond(a, 404, not_found);
+    if (!(try isListed(a, s, &tp.key))) return respond(a, 404, not_found);
     var placed = try Placed.load(a, s, overlay_state);
     const d = (try deployOf(a, s, &tp.key, &placed)) orelse return respond(a, 404, not_found);
     if (tp.part == .detail) return respondWith(a, 200, "application/json", cache_state, try jsonOf(a, d.listed));
@@ -1363,18 +1312,31 @@ fn appOfRead(a: Allocator, s: c.store.Store, req: Value) ![]const u8 {
 const sk = @import("overlay_sk");
 var delegate = false;
 
+/// The kernel's `events` import (skein docs/VM.md "The event index"; skein-overlay 0.25.1's vm.zig
+/// declares none).
+extern "skein" fn events(q: [*]const u8, len: u32, out: [*]u8, cap: u32) i32;
+
+fn eventsImport(a: Allocator, query: Value) anyerror!Value {
+    const q = try c.cbor.encode(a, query);
+    return c.cbor.decode(a, try sk.result(a, events, .{ q.ptr, @as(u32, @intCast(q.len)) }));
+}
+
 fn run(a: Allocator) anyerror!void {
     const in = try sk.input(a);
     const func = in.getText("fn") orelse "";
-    // 0.17.0: the step's time for the hooks (a burn row's `at`).
+    // 0.17.0: the step's time for the hooks (a burn's `at`).
     now_ms = in.getUint("now") orelse 0;
+    // 0.18.0: the event index, and the app every name it reads or emits is under.
+    events_fn = &eventsImport;
     const route = if (eql(u8, func, "tokens")) &tokensRoute else if (eql(u8, func, "token")) &tokenRoute else {
+        if (sk.callArg(a, in)) |arg| try setApp(lookup.appOf(arg)) else |_| {}
         delegate = true;
         return;
     };
     const req = try sk.callArg(a, in);
     const s = sk.store();
     const app = try appOfRead(a, s, req);
+    try setApp(app);
     const deploys = try sk.head(a, try lookup.headName(a, app, index_name));
     const overlay = try sk.head(a, try std.fmt.allocPrint(a, "{s}/state", .{app}));
     const out = try route(a, s, deploys, try sk.head(a, lookup.chain_head), overlay, req);

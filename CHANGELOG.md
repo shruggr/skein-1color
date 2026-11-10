@@ -4,6 +4,27 @@ Released versions of skein-1color (skein-mandala until 0.9.2). Versions
 before 0.10.0 are in the git history (each release commit names what
 changed).
 
+## 0.18.0 (branch `recognizers`, not released; version files not bumped)
+
+The color lookup as a recognizer (agent-env plans/research/plan-pass-recognizers-2026-11-09.md, its
+skein-1color part). Engine skein-overlay v0.25.1 (skein-sdk v0.18.0, skein-chain v0.9.0).
+
+- Re-pin: skein-overlay v0.23.0 → v0.25.1; `bin/overlay.wasm` the tag's committed engine; `etc/app.json`
+  without `lookupVersion`, the `reindex` role and route, and the libp2p receive row
+  `/skein/overlay/beef/1.0.0`.
+- `color-lookup` keeps no index: the maps `values`, `authorities`, `outputs`, `deploys`, `admitted`,
+  `symbols`, `burns` are gone; `balances`, `byBalance`, `holders`, `counters` stay (summaries). It reads
+  the overlay's facts `<app>/topic/output/<txid>.<vout>` (the kernel's `events` read) and emits
+  `<app>/color/burn/<txid>` {tokenId, amount, at} (was the bare `burn` event) and
+  `<app>/color/symbol/<hex(lower sym)>/<txid>.<vout>` {tokenId}, each `{reverted: true}` from the
+  `rejected` hook.
+- BRC-207 `color-admission` / `color-spendability` (both forms) keep their query and answer shapes:
+  admission = the latest output fact not `reverted` and the asset's output by its stored transaction;
+  spendability adds the chain state's `spentBy`.
+- The queries `{tokenId}`, `{authoritiesTokenId}`, `{txid, outputIndex}` are gone (no consumer).
+- `/tokens` (`ids`, `q`, `after`, `limit`, `skip`), `/<token>`, `/icon`, `/deploy`, `/holders`: same
+  paths and JSON, read from the facts and the summaries.
+
 ## 0.17.2 (2026-11-07)
 
 Reindex (agent-env plans/reindex-2026-11-07.md). Engine skein-overlay v0.23.0.

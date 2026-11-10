@@ -905,14 +905,65 @@ test "program: a legacy topic tm_<txid>_<vout> through the topic contract" {
 const ls = @import("src/color_lookup.zig");
 const lookup = @import("lookup");
 
-/// The lookup service over a store: hooks through the contract's `handle`, queries straight to `answer`.
+/// The event index a test reads (0.18.0): every fact in order, as the kernel keeps them (name, record).
+const Ev = struct { name: []const u8, record: Value };
+var test_log: ?*std.ArrayList(Ev) = null;
+
+/// The kernel's `events` read over `test_log`: `{name | prefix, latest?}` → `[{name, record}]` in name
+/// then place order (a prefix read, as the kernel's), the last per name with `latest`.
+fn fakeEvents(a: std.mem.Allocator, q: Value) anyerror!Value {
+    const log = test_log orelse return .{ .array = &.{} };
+    const exact = q.getText("name");
+    const key = exact orelse q.getText("prefix") orelse return error.BadQuery;
+    const latest = q.getBool("latest") orelse false;
+    var names_seen: std.ArrayList([]const u8) = .empty;
+    for (log.items) |e| {
+        const hit = if (exact != null) std.mem.eql(u8, e.name, key) else std.mem.startsWith(u8, e.name, key);
+        if (!hit) continue;
+        for (names_seen.items) |n| {
+            if (std.mem.eql(u8, n, e.name)) break;
+        } else try names_seen.append(a, e.name);
+    }
+    std.mem.sort([]const u8, names_seen.items, {}, struct {
+        fn lt(_: void, x: []const u8, y: []const u8) bool {
+            return std.mem.order(u8, x, y) == .lt;
+        }
+    }.lt);
+    var out: std.ArrayList(Value) = .empty;
+    for (names_seen.items) |n| {
+        var last: ?Value = null;
+        for (log.items) |e| if (std.mem.eql(u8, e.name, n)) {
+            if (latest) last = e.record else try out.append(a, try eventRow(a, n, e.record));
+        };
+        if (last) |r| try out.append(a, try eventRow(a, n, r));
+    }
+    return .{ .array = out.items };
+}
+
+fn eventRow(a: std.mem.Allocator, name: []const u8, record: Value) !Value {
+    return .{ .map = try a.dupe(w.cbor.Entry, &.{ .{ .key = "name", .value = .{ .text = name } }, .{ .key = "record", .value = record } }) };
+}
+
+/// The lookup service over a store: hooks through the contract's `handle`, queries straight to
+/// `answer`; it plays the overlay engine for the event index (0.18.0): after each hook, the hook's
+/// own events and the engine's `<app>/topic/output/<op>` facts for it, as skein-overlay 0.25.1 emits
+/// them (admitted for the outputs it admitted; spent, by the spender, for a consumed coin; on a
+/// rejection reverted for the outputs it had admitted and admitted again for the coins it consumed).
 const Ls = struct {
     a: std.mem.Allocator,
     s: w.store.Store,
     state: ?[]const u8 = null,
     service: []const u8 = ls.service_name,
-    /// The events the last hook asked to be emitted (0.17.0).
+    /// The events the last hook asked to be emitted.
     events: []const Value = &.{},
+    log: std.ArrayList(Ev) = .empty,
+
+    /// Make this one's log the index the program reads.
+    fn use(self: *Ls) void {
+        test_log = &self.log;
+        ls.events_fn = &fakeEvents;
+        ls.setApp("1color") catch unreachable;
+    }
 
     fn uints(a: std.mem.Allocator, xs: []const u32) ![]Value {
         const out = try a.alloc(Value, xs.len);
@@ -920,7 +971,19 @@ const Ls = struct {
         return out;
     }
 
+    fn fact(self: *Ls, name: []const u8, record: Value) !void {
+        try self.log.append(self.a, .{ .name = name, .record = record });
+    }
+
+    fn outputFact(self: *Ls, txid: [32]u8, vout: u32, state: []const u8, by: ?[32]u8) !void {
+        var es: std.ArrayList(w.cbor.Entry) = .empty;
+        try es.append(self.a, .{ .key = "state", .value = .{ .text = state } });
+        if (by) |t| try es.append(self.a, .{ .key = "spentBy", .value = .{ .text = try self.a.dupe(u8, &w.header.toHex(t)) } });
+        try self.fact(try ls.topicOutputName(self.a, txid, vout), .{ .map = es.items });
+    }
+
     fn hook(self: *Ls, func: []const u8, t: []const u8, rest: []const w.cbor.Entry) !void {
+        self.use();
         const head = [_]w.cbor.Entry{
             .{ .key = "kind", .value = .{ .text = "lookup-hook" } },
             .{ .key = "app", .value = .{ .text = "1color" } },
@@ -932,6 +995,7 @@ const Ls = struct {
         const h = try lookup.handle(self.a, ls.spec, self.s, .regtest, self.state, null, func, arg);
         if (h.state) |sc| self.state = sc;
         self.events = if (h.answer.getArray("events")) |es| es else &.{};
+        for (self.events) |e| try self.fact(e.getText("event").?, e);
     }
 
     fn admitted(self: *Ls, t: []const u8, raw: []const u8, outs: []const u32) !void {
@@ -941,6 +1005,7 @@ const Ls = struct {
             .{ .key = "outputsToAdmit", .value = .{ .array = try uints(self.a, outs) } },
             .{ .key = "coinsRetained", .value = .{ .array = &.{} } },
         });
+        for (outs) |o| try self.outputFact(w.beef.txidOf(raw), o, "admitted", null);
     }
 
     fn spent(self: *Ls, t: []const u8, src: []const u8, vout: u32, by: []const u8) !void {
@@ -953,15 +1018,28 @@ const Ls = struct {
             }) } },
             .{ .key = "spendingTx", .value = .{ .cid = bc } },
         });
+        try self.outputFact(w.beef.txidOf(src), vout, "spent", w.beef.txidOf(by));
     }
 
     fn rejected(self: *Ls, t: []const u8, raw: []const u8) !void {
         const cid = try self.s.putBitcoin(self.a, .tx, raw);
         try self.hook("rejected", t, &.{.{ .key = "tx", .value = .{ .cid = cid } }});
+        const txid = w.beef.txidOf(raw);
+        const tx = try bsvz.transaction.Transaction.parse(self.a, raw);
+        for (0..tx.outputs.len) |o| {
+            const f = (try ls.outputFact(self.a, txid, @intCast(o))) orelse continue;
+            if (f.state != .reverted) try self.outputFact(txid, @intCast(o), "reverted", null);
+        }
+        for (tx.inputs) |in| {
+            const po = in.previous_outpoint;
+            const f = (try ls.outputFact(self.a, po.txid.bytes, po.index)) orelse continue;
+            if (f.state == .spent and std.mem.eql(u8, &f.spent_by.?, &txid)) try self.outputFact(po.txid.bytes, po.index, "admitted", null);
+        }
     }
 
     /// The query's outputs as `<txid hex>:<vout>`.
     fn ask(self: *Ls, q: []const w.cbor.Entry) ![]const []const u8 {
+        self.use();
         var svc = try lookup.Service.loadIndex(self.a, self.s, self.service, ls.index_name, ls.spec.maps, self.state);
         var ch = try lookup.Chain.load(self.a, self.s, null, .regtest);
         const ans = try ls.answer(self.a, &svc, &ch, .{ .map = try self.a.dupe(w.cbor.Entry, q) });
@@ -985,7 +1063,7 @@ fn text(t: []const u8) Value {
     return .{ .text = t };
 }
 
-test "lookup: {tokenId}, {authoritiesTokenId}, {txid, outputIndex} over the hooks; limit and skip; spent and rejected" {
+test "lookup (0.18.0): the freeform queries are gone; admission follows the overlay's output facts, the token read from the stored transaction; a hook emits no fact for a plain transfer" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -993,99 +1071,45 @@ test "lookup: {tokenId}, {authoritiesTokenId}, {txid, outputIndex} over the hook
     defer ms.deinit();
     const f = try Fixtures.init(a);
     var l: Ls = .{ .a = a, .s = ms.store() };
-    var buf: [names.max_topic_len]u8 = undefined;
-    const tname = try a.dupe(u8, names.topicName(&buf, .{ .txid = f.id }));
+    l.use();
+    var tb: [names.max_topic_len]u8 = undefined;
+    var lb: [names.max_lookup_len]u8 = undefined;
+    const tname = try a.dupe(u8, names.topicName(&tb, .{ .txid = f.id }));
+    const service = try a.dupe(u8, names.lookupName(&lb, .{ .txid = f.id }));
     const deploy = f.raws.get("token_deploy").?;
     const pd = f.raws.get("pool_deploy").?;
     const id = try std.fmt.allocPrint(a, "{s}_0", .{&w.header.toHex(f.id)});
 
-    // The deploy (10,000,000 at output 0): it holds the supply, so it is a value output (0.15.1; until
-    // 0.15.0 it was filed with the authorities, an error).
-    try l.admitted(tname, deploy, &.{0});
-    try expectOps(&.{opName(a, deploy, 0)}, try l.ask(&.{.{ .key = "tokenId", .value = text(id) }}));
-    try expectOps(&.{}, try l.ask(&.{.{ .key = "authoritiesTokenId", .value = text(id) }}));
+    // {tokenId}, {authoritiesTokenId}, {txid, outputIndex}: refused under every name.
+    for ([_][]const u8{ ls.service_name, service }) |nm| {
+        l.service = nm;
+        for ([_][]const w.cbor.Entry{
+            &.{.{ .key = "tokenId", .value = text(id) }},
+            &.{.{ .key = "authoritiesTokenId", .value = text(id) }},
+            &.{ .{ .key = "txid", .value = text(id[0..64]) }, .{ .key = "outputIndex", .value = .{ .uint = 0 } } },
+        }) |q| try testing.expectError(error.BadQuery, l.ask(q));
+    }
+    l.service = ls.service_name;
 
-    // A contract's deploy spends it: three value outputs, in outpoint order.
+    // The deploy, then the pool's deploy spending it: admission follows the facts.
+    try l.admitted(tname, deploy, &.{0});
     try l.admitted(tname, pd, &.{ 0, 1, 2 });
     try l.spent(tname, deploy, 0, pd);
-    try expectOps(&.{}, try l.ask(&.{.{ .key = "authoritiesTokenId", .value = text(id) }}));
-    const values = [_][]const u8{ opName(a, pd, 0), opName(a, pd, 1), opName(a, pd, 2) };
-    try expectOps(&values, try l.ask(&.{.{ .key = "tokenId", .value = text(id) }}));
-    try expectOps(values[1..], try l.ask(&.{ .{ .key = "tokenId", .value = text(id) }, .{ .key = "skip", .value = .{ .uint = 1 } } }));
-    try expectOps(values[1..2], try l.ask(&.{ .{ .key = "tokenId", .value = text(id) }, .{ .key = "limit", .value = .{ .uint = 1 } }, .{ .key = "skip", .value = .{ .uint = 1 } } }));
-    try expectOps(&.{}, try l.ask(&.{ .{ .key = "tokenId", .value = text(id) }, .{ .key = "skip", .value = .{ .uint = 3 } } }));
-
-    // One output by outpoint (txid in display order); the spent deploy is not answered.
-    const pd_hex = try a.dupe(u8, &w.header.toHex(w.beef.txidOf(pd)));
-    const dp_hex = try a.dupe(u8, &w.header.toHex(f.id));
-    try expectOps(values[2..3], try l.ask(&.{ .{ .key = "txid", .value = text(pd_hex) }, .{ .key = "outputIndex", .value = .{ .uint = 2 } } }));
-    try expectOps(&.{}, try l.ask(&.{ .{ .key = "txid", .value = text(dp_hex) }, .{ .key = "outputIndex", .value = .{ .uint = 0 } } }));
-    try expectOps(&.{}, try l.ask(&.{ .{ .key = "txid", .value = text(pd_hex) }, .{ .key = "outputIndex", .value = .{ .uint = 9 } } }));
-
-    // The first of authoritiesTokenId, tokenId answers.
-    try expectOps(&.{}, try l.ask(&.{ .{ .key = "tokenId", .value = text(id) }, .{ .key = "authoritiesTokenId", .value = text(id) } }));
-
-    // The contract's deploy rejected: its outputs gone, the deploy unspent again (a value output).
+    try testing.expectEqual(@as(usize, 0), l.events.len);
+    const asked = [_][]const u8{ dot(a, deploy, 0), dot(a, pd, 0), dot(a, pd, 1), dot(a, pd, 2) };
+    try expectOps(&.{ opName(a, deploy, 0), opName(a, pd, 0), opName(a, pd, 1), opName(a, pd, 2) }, try ask207(&l, service, null, try q207(a, "color-admission", .{ .uint = 1 }, id, tname, &asked)));
+    // Another token's service: the same facts, not its outputs by their transactions.
+    var lb2: [names.max_lookup_len]u8 = undefined;
+    var tb2: [names.max_topic_len]u8 = undefined;
+    const other: names.TokenId = .{ .txid = id_a };
+    const other_asset = try std.fmt.allocPrint(a, "{s}_0", .{&w.header.toHex(id_a)});
+    try expectOps(&.{}, try ask207(&l, try a.dupe(u8, names.lookupName(&lb2, other)), null, try q207(a, "color-admission", .{ .uint = 1 }, other_asset, try a.dupe(u8, names.topicName(&tb2, other)), &asked)));
+    // Rejected: its outputs' facts reverted, never admitted; the deploy given back.
     try l.rejected(tname, pd);
-    try expectOps(&.{opName(a, deploy, 0)}, try l.ask(&.{.{ .key = "tokenId", .value = text(id) }}));
-    try expectOps(&.{}, try l.ask(&.{.{ .key = "authoritiesTokenId", .value = text(id) }}));
-
-    // A hook for another topic does nothing.
-    try l.admitted("tm_demo", pd, &.{ 0, 1, 2 });
-    try expectOps(&.{opName(a, deploy, 0)}, try l.ask(&.{.{ .key = "tokenId", .value = text(id) }}));
-}
-
-test "lookup: a BRC-161 token's authority and mint, by its <txid>_<vout> id" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    var ms = w.store.MemStore.init(testing.allocator);
-    defer ms.deinit();
-    const f = try Fixtures.init(a);
-    var l: Ls = .{ .a = a, .s = ms.store() };
-    const ad = f.raws.get("legacy_auth_deploy").?;
-    const mint = f.raws.get("legacy_mint").?;
-    const LA = legacyId(f, "legacy_auth_deploy", 0);
-    var buf: [names.max_topic_len]u8 = undefined;
-    const tname = try a.dupe(u8, names.topicName(&buf, .{ .txid = LA.txid, .vout = 0, .kind = .legacy }));
-    const id = try std.fmt.allocPrint(a, "{s}_0", .{&w.header.toHex(LA.txid)});
-
-    try l.admitted(tname, ad, &.{0});
-    try expectOps(&.{opName(a, ad, 0)}, try l.ask(&.{.{ .key = "authoritiesTokenId", .value = text(id) }}));
-    // The mint (0) is a value output; the new authority (1) an authority output.
-    try l.admitted(tname, mint, &.{ 0, 1 });
-    try l.spent(tname, ad, 0, mint);
-    try expectOps(&.{opName(a, mint, 1)}, try l.ask(&.{.{ .key = "authoritiesTokenId", .value = text(id) }}));
-    try expectOps(&.{opName(a, mint, 0)}, try l.ask(&.{.{ .key = "tokenId", .value = text(id) }}));
-}
-
-test "lookup: queries out of shape are refused" {
-    const id = "a5" ** 32 ++ "_0";
-    const ok = [_]w.cbor.Entry{.{ .key = "tokenId", .value = text(id) }};
-    try testing.expect((try ls.parseQuery(.{ .map = &ok })) == .values);
-    const p = (try ls.parseQuery(.{ .map = &ok })).values;
-    try testing.expectEqual(@as(u64, 100), p.limit);
-    try testing.expectEqual(@as(u64, 0), p.skip);
-    const legacy = [_]w.cbor.Entry{.{ .key = "authoritiesTokenId", .value = text("a5" ** 32 ++ "_7") }};
-    try testing.expectEqual(@as(u32, 7), (try ls.parseQuery(.{ .map = &legacy })).authorities.id.vout);
-    const bad = [_][]const w.cbor.Entry{
-        &.{.{ .key = "tokenId", .value = text("A5" ** 32 ++ "_0") }}, // uppercase
-        &.{.{ .key = "tokenId", .value = text("a5" ** 32 ++ "_") }}, // no vout after the separator
-        &.{.{ .key = "tokenId", .value = text("a5" ** 32 ++ "-0") }}, // not a separator
-        &.{.{ .key = "tokenId", .value = text("a5" ** 32 ++ "_00") }},
-        &.{.{ .key = "tokenId", .value = .{ .uint = 1 } }},
-        &.{ .{ .key = "tokenId", .value = text(id) }, .{ .key = "limit", .value = .{ .uint = 0 } } },
-        &.{ .{ .key = "tokenId", .value = text(id) }, .{ .key = "limit", .value = .{ .uint = 101 } } },
-        &.{ .{ .key = "tokenId", .value = text(id) }, .{ .key = "skip", .value = .{ .uint = 100_001 } } },
-        &.{ .{ .key = "tokenId", .value = text(id) }, .{ .key = "skip", .value = .{ .nint = 0 } } },
-        &.{ .{ .key = "tokenId", .value = text(id) }, .{ .key = "metadataTokenId", .value = text(id) } }, // not built
-        &.{ .{ .key = "txid", .value = text("a5" ** 31) }, .{ .key = "outputIndex", .value = .{ .uint = 0 } } },
-        &.{ .{ .key = "txid", .value = text("a5" ** 32) }, .{ .key = "outputIndex", .value = .{ .uint = 1 << 32 } } },
-    };
-    for (bad) |q| try testing.expectError(error.BadQuery, ls.parseQuery(.{ .map = q }));
-    try testing.expectError(error.UnsupportedQuery, ls.parseQuery(.{ .map = &.{.{ .key = "txid", .value = text("a5" ** 32) }} }));
-    try testing.expectError(error.UnsupportedQuery, ls.parseQuery(.{ .map = &.{} }));
-    try testing.expectError(error.BadQuery, ls.parseQuery(.{ .text = "x" }));
+    try expectOps(&.{opName(a, deploy, 0)}, try ask207(&l, service, null, try q207(a, "color-admission", .{ .uint = 1 }, id, tname, &asked)));
+    // No event index: the hooks and the answers cannot run.
+    ls.events_fn = null;
+    try testing.expectError(error.NoEventIndex, ls.outputFact(a, f.id, 0));
 }
 
 test "program: metadata and documentation through the topic contract's describe" {
@@ -1218,6 +1242,7 @@ test "ls_color over tm_color (0.12.1): BRC-207's color-admission with topic tm_c
     defer ms.deinit();
     const f = try Fixtures.init(a);
     var l: Ls = .{ .a = a, .s = ms.store() };
+    l.use();
     try testing.expectEqualStrings("ls_color", l.service);
     const t = names.deploys_topic;
     const deploy = f.raws.get("token_deploy").?;
@@ -1250,16 +1275,19 @@ test "ls_color over tm_color (0.12.1): BRC-207's color-admission with topic tm_c
     try testing.expectError(error.BadQuery, ask207(&l, "ls_color", null, try adm(a, "color-admission", hex0, &.{op0})));
     try testing.expectError(error.BadQuery, ask207(&l, "ls_color", null, try q207(a, "color-admission", .{ .uint = 2 }, id0, "tm_color", &.{op0})));
     try testing.expectError(error.BadQuery, ask207(&l, "ls_color", null, try adm(a, "color-balance", id0, &.{op0})));
-    // The three queries read the token topics' maps: the discovery feed puts nothing there.
-    try expectOps(&.{}, try l.ask(&.{.{ .key = "authoritiesTokenId", .value = text(id0) }}));
-    try expectOps(&.{}, try l.ask(&.{ .{ .key = "txid", .value = text(hex0) }, .{ .key = "outputIndex", .value = .{ .uint = 0 } } }));
+    // 0.18.0: the freeform queries are gone.
+    try testing.expectError(error.BadQuery, l.ask(&.{.{ .key = "authoritiesTokenId", .value = text(id0) }}));
 
-    // A token topic's admission is not the discovery topic's.
+    // An output the overlay admitted under any topic is admitted (its fact names no topic,
+    // skein-overlay 0.25.1); the discovery form answers it only as a deploy, by its stored transaction.
     var buf: [names.max_topic_len]u8 = undefined;
     const ld0 = f.raws.get("legacy_deploy0").?;
     const hexl = try a.dupe(u8, &w.header.toHex(w.beef.txidOf(ld0)));
     try l.admitted(names.topicName(&buf, .{ .txid = w.beef.txidOf(ld0) }), ld0, &.{0});
-    try expectOps(&.{}, try ask207(&l, "ls_color", null, try adm(a, "color-admission", try std.fmt.allocPrint(a, "{s}_0", .{hexl}), &.{try std.fmt.allocPrint(a, "{s}.0", .{hexl})})));
+    try expectOps(&.{opName(a, ld0, 0)}, try ask207(&l, "ls_color", null, try adm(a, "color-admission", try std.fmt.allocPrint(a, "{s}_0", .{hexl}), &.{try std.fmt.allocPrint(a, "{s}.0", .{hexl})})));
+    const pd = f.raws.get("pool_deploy").?;
+    try l.admitted(names.topicName(&buf, .{ .txid = w.beef.txidOf(deploy) }), pd, &.{0});
+    try expectOps(&.{}, try ask207(&l, "ls_color", null, try adm(a, "color-admission", try std.fmt.allocPrint(a, "{s}_0", .{&w.header.toHex(w.beef.txidOf(pd))}), &.{dot(a, pd, 0)})));
 
     // Spent: still admitted (a registry). Rejected: gone.
     try l.spent(t, deploy, 0, f.raws.get("pool_deploy").?);
@@ -1432,6 +1460,7 @@ test "tokens: every deploy tm_color admitted, its id `<txid>_<vout>`, topic, sym
     const s = ms.store();
     const f = try Fixtures.init(a);
     var l: Ls = .{ .a = a, .s = s };
+    l.use();
     const t = names.deploys_topic;
 
     try testing.expectEqual(@as(usize, 0), (try ls.tokens(a, s, null, null, null, .{})).len); // no index yet
@@ -1541,6 +1570,7 @@ test "token reads (0.14.0): ?ids= one row per id in order; /<token>, /<token>/ic
     defer ms.deinit();
     const s = ms.store();
     var l: Ls = .{ .a = a, .s = s };
+    l.use();
     const t = names.deploys_topic;
 
     // A 1Color deploy with an embedded icon ["image/png", h'010203'].
@@ -1723,6 +1753,7 @@ test "balances (0.15.0): P2PKH value outputs credit their address as they enter 
     var ms = w.store.MemStore.init(testing.allocator);
     defer ms.deinit();
     var l: Ls = .{ .a = a, .s = ms.store() };
+    l.use();
     var buf: [names.max_topic_len]u8 = undefined;
     const tname = try a.dupe(u8, names.topicName(&buf, .{ .txid = id_a }));
     const A: u8 = 0x0a;
@@ -1810,6 +1841,7 @@ test "counters (0.17.0): supply, unspent authorities, burned at admission; a bur
     var ms = w.store.MemStore.init(testing.allocator);
     defer ms.deinit();
     var l: Ls = .{ .a = a, .s = ms.store() };
+    l.use();
     var buf: [names.max_topic_len]u8 = undefined;
     const tname = try a.dupe(u8, names.topicName(&buf, .{ .txid = id_a }));
     const A: u8 = 0x0a;
@@ -1838,15 +1870,15 @@ test "counters (0.17.0): supply, unspent authorities, burned at admission; a bur
     try l.admitted(tname, t2, &.{0});
     try testing.expectEqual(@as(usize, 1), l.events.len);
     const ev = l.events[0];
-    try testing.expectEqualStrings("burn", ev.getText("event").?);
+    // 0.18.0: the burn is a fact under the app's own name, `<app>/color/burn/<txid>` {tokenId, amount, at}.
+    const burn_name = try std.fmt.allocPrint(a, "1color/color/burn/{s}", .{&w.header.toHex(t2id)});
+    try testing.expectEqualStrings(burn_name, ev.getText("event").?);
+    try testing.expectEqualStrings(burn_name, try ls.burnName(a, t2id));
     const id = idString(a, id_a, 0);
-    try testing.expectEqualStrings(try std.fmt.allocPrint(a, "ls_color_{s}", .{id}), ev.getText("topic").?);
+    try testing.expectEqual(@as(usize, 4), ev.map.len);
     try testing.expectEqualStrings(id, ev.getText("tokenId").?);
-    const row = ev.get("row").?;
-    try testing.expectEqualStrings("burn", row.getText("kind").?);
-    try testing.expectEqualStrings(&w.header.toHex(t2id), row.getText("txid").?);
-    try testing.expectEqual(@as(u64, 150), row.getUint("amount").?);
-    try testing.expectEqual(@as(u64, 2000), row.getUint("at").?);
+    try testing.expectEqual(@as(u64, 150), ev.getUint("amount").?);
+    try testing.expectEqual(@as(u64, 2000), ev.getUint("at").?);
     try l.spent(tname, t1, 0, t2);
     try l.spent(tname, t1, 3, t2);
     n = try countersAt(a, &l);
@@ -1879,10 +1911,9 @@ test "counters (0.17.0): supply, unspent authorities, burned at admission; a bur
     ls.now_ms = 3000;
     try l.rejected(tname, t2);
     try testing.expectEqual(@as(usize, 1), l.events.len);
-    try testing.expectEqualStrings("burn", l.events[0].getText("event").?);
-    try testing.expectEqualStrings("revert", l.events[0].get("row").?.getText("kind").?);
-    try testing.expectEqual(@as(u64, 150), l.events[0].get("row").?.getUint("amount").?);
-    try testing.expectEqual(@as(u64, 3000), l.events[0].get("row").?.getUint("at").?);
+    try testing.expectEqualStrings(burn_name, l.events[0].getText("event").?);
+    try testing.expectEqual(@as(usize, 2), l.events[0].map.len);
+    try testing.expect(l.events[0].getBool("reverted").?);
     n = try countersAt(a, &l);
     try testing.expectEqual(@as(u64, 850 - 350 + 500), n.supply);
     try testing.expectEqual(@as(u64, 1), n.authorities);
@@ -1896,7 +1927,9 @@ test "counters (0.17.0): supply, unspent authorities, burned at admission; a bur
     try testing.expectEqual(@as(u64, 0), n.authorities);
     var svc = try lookup.Service.loadIndex(a, l.s, ls.service_name, ls.index_name, ls.spec.maps, l.state);
     try testing.expectEqual(@as(usize, 0), try svc.map("counters").count());
-    try testing.expectEqual(@as(usize, 0), try svc.map("burns").count());
+    // A second rejection unwinds nothing more (the burn's latest fact is the revert).
+    try l.rejected(tname, t2);
+    try testing.expectEqual(@as(usize, 0), l.events.len);
 }
 
 test "holders (0.15.0): /<token>/holders largest first, limit and skip, the count; addresses on the chain state's network; a query out of shape 400" {
@@ -1907,6 +1940,7 @@ test "holders (0.15.0): /<token>/holders largest first, limit and skip, the coun
     defer ms.deinit();
     const s = ms.store();
     var l: Ls = .{ .a = a, .s = s };
+    l.use();
     var buf: [names.max_topic_len]u8 = undefined;
     const tname = try a.dupe(u8, names.topicName(&buf, .{ .txid = id_a }));
     var outs: [5][]const u8 = undefined;
@@ -1960,15 +1994,14 @@ test "the manifest (shruggr/skein#143): routes, filters and roles; no dispatch, 
     try testing.expect(j.get("dispatch") == null and j.get("reads") == null);
     const gated = j.get("roles").?.object.get("root").?.array.items;
     // No `market` / `validator` (skein-overlay 0.12.0: every skein is both, always; no switch).
-    // 0.17.2 (skein-overlay 0.23.0): `reindex`, root's, in its own box; the lookup's record version.
-    try testing.expectEqual(@as(usize, 4), gated.len);
-    for ([_][]const u8{ "register", "registerLookup", "deregisterLookup", "reindex" }, gated) |x, g| try testing.expectEqualStrings(x, g.string);
-    try testing.expectEqual(@as(i64, 1), j.get("lookupVersion").?.integer);
-    var reindex_row = false;
+    // 0.18.0 (skein-overlay 0.25.1): no `reindex` role or route, no `lookupVersion`, no libp2p receive row.
+    try testing.expectEqual(@as(usize, 3), gated.len);
+    for ([_][]const u8{ "register", "registerLookup", "deregisterLookup" }, gated) |x, g| try testing.expectEqualStrings(x, g.string);
+    try testing.expect(j.get("lookupVersion") == null);
     for (j.get("routes").?.array.items) |r| {
-        if (std.mem.eql(u8, r.object.get("address").?.string, "reindex")) reindex_row = std.mem.eql(u8, r.object.get("handler").?.string, "overlay.reindex");
+        const addr = r.object.get("address").?.string;
+        try testing.expect(!std.mem.eql(u8, addr, "reindex") and !std.mem.eql(u8, addr, "/skein/overlay/beef/1.0.0"));
     }
-    try testing.expect(reindex_row);
     try testing.expectEqualStrings("color-lookup.tokens", j.get("filters").?.object.get("tokens").?.string);
     try testing.expectEqualStrings("color-lookup.token", j.get("filters").?.object.get("token").?.string);
     var tokens_read = false;
@@ -2013,6 +2046,7 @@ test "tokens: newest first by the chain — unmined first, then the higher block
 
 /// The service called as `service` over the index, against the chain state `chain` (null: empty).
 fn ask207(l: *Ls, service: []const u8, chain: ?[]const u8, q: Value) ![]const []const u8 {
+    l.use();
     var svc = try lookup.Service.loadIndex(l.a, l.s, service, ls.index_name, ls.spec.maps, l.state);
     var ch = try lookup.Chain.load(l.a, l.s, chain, .regtest);
     const ans = try ls.answer(l.a, &svc, &ch, q);
@@ -2053,6 +2087,7 @@ test "BRC-207: color-spendability and color-admission over ls_color_<assetId>: e
     try testing.expectEqualStrings(try std.fmt.allocPrint(a, "ls_color_{s}", .{asset}), service);
     // The hooks come once, under whichever name listens first: here the token's own.
     var l: Ls = .{ .a = a, .s = ms.store(), .service = service };
+    l.use();
     const deploy = f.raws.get("token_deploy").?;
     const pd = f.raws.get("pool_deploy").?;
     const one: Value = .{ .uint = 1 };
@@ -2080,9 +2115,8 @@ test "BRC-207: color-spendability and color-admission over ls_color_<assetId>: e
     // Admission: spent ones too (the deploy), each once.
     try expectOps(&.{ opName(a, pd, 1), opName(a, deploy, 0), opName(a, pd, 0) }, try ask207(&l, service, chain, try q207(a, admit, one, asset, tname, &asked)));
 
-    // One index under every name: ls_color's own queries see what the hooks under the token's name wrote.
-    const id = text(asset);
-    try expectOps(&.{ opName(a, pd, 0), opName(a, pd, 1), opName(a, pd, 2) }, try ask207(&l, ls.service_name, null, .{ .map = &.{.{ .key = "tokenId", .value = id }} }));
+    // 0.18.0: ls_color answers no freeform query.
+    try testing.expectError(error.BadQuery, ask207(&l, ls.service_name, null, .{ .map = &.{.{ .key = "tokenId", .value = text(asset) }} }));
 
     // The pool's deploy rejected: its outputs were never validly admitted; the deploy unspent again.
     try l.rejected(tname, pd);
@@ -2157,6 +2191,7 @@ test "BRC-207: queries validated strictly: version 1, the service's own assetId 
     // Through `answer`: the per-asset service takes only these; ls_color refuses a token topic's form
     // (its BRC-207 form names tm_color, 0.12.1); a name the program does not serve is refused.
     var l: Ls = .{ .a = a, .s = ms.store() };
+    l.use();
     try testing.expectError(error.BadQuery, ask207(&l, service, null, .{ .map = &.{.{ .key = "tokenId", .value = text(asset) }} }));
     try testing.expectError(error.BadQuery, ask207(&l, ls.service_name, null, full));
     try testing.expectError(error.UnknownService, ask207(&l, "ls_other", null, full));
@@ -2182,13 +2217,16 @@ test "one index for the program's names (skein-overlay 0.11.0): a hook under any
     // each goes by its topic, whatever the name, and every name reads the one index the same way.
     var lb: [names.max_lookup_len]u8 = undefined;
     const lname = try a.dupe(u8, names.lookupName(&lb, .{ .txid = f.id }));
-    var l: Ls = .{ .a = a, .s = ms.store(), .service = ls.service_name };
-    try l.admitted(names.deploys_topic, deploy, &.{0});
-    l.service = lname;
+    var l: Ls = .{ .a = a, .s = ms.store(), .service = lname };
+    l.use();
+    // (The token's topic first: here each admission is its own step, and the second sees the first's
+    // output fact — the facts name no topic.)
     try l.admitted(tname, deploy, &.{0});
-    try testing.expectEqualStrings("ls_color", (try ms.store().getValue(a, l.state.?)).getText("service").?);
     l.service = ls.service_name;
-    try expectOps(&.{opName(a, deploy, 0)}, try l.ask(&.{.{ .key = "tokenId", .value = text(id) }}));
+    try l.admitted(names.deploys_topic, deploy, &.{0});
+    try testing.expectEqualStrings("ls_color", (try ms.store().getValue(a, l.state.?)).getText("service").?);
+    var svc = try lookup.Service.loadIndex(a, l.s, lname, ls.index_name, ls.spec.maps, l.state);
+    try testing.expectEqual(@as(u64, 10_000_000), (try ls.countersOf(&svc, &tokOf(deploy))).supply);
     // BRC-207's admission of the deploy under both names: over tm_color (ls_color) and over its topic.
     const dot0 = try std.fmt.allocPrint(a, "{s}.0", .{id[0..64]});
     try expectOps(&.{opName(a, deploy, 0)}, try ask207(&l, ls.service_name, null, try q207(a, "color-admission", .{ .uint = 1 }, id, "tm_color", &.{dot0})));
@@ -2268,7 +2306,7 @@ fn holdersAt(a: std.mem.Allocator, l: *Ls, tok: [36]u8) !struct { count: u64, ro
     return .{ .count = h.count, .rows = h.rows };
 }
 
-test "deploys by what they hold (0.15.1): a supply deploy is a value output — in {tokenId}, a holder of the full supply, moved by its spend; an authority-only deploy stays an authority and holds nothing; BRC-207's admission and spendability answer both as before" {
+test "deploys by what they hold (0.15.1): a supply deploy is a value output — a holder of the full supply, moved by its spend; an authority-only deploy stays an authority and holds nothing; BRC-207's admission and spendability answer both as before" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -2276,6 +2314,7 @@ test "deploys by what they hold (0.15.1): a supply deploy is a value output — 
     defer ms.deinit();
     const s = ms.store();
     var l: Ls = .{ .a = a, .s = s };
+    l.use();
     const A: u8 = 0x1a;
     const B: u8 = 0x1b;
 
@@ -2290,9 +2329,6 @@ test "deploys by what they hold (0.15.1): a supply deploy is a value output — 
     const dot0 = dot(a, dep, 0);
     try l.admitted(tname, dep, &.{0});
     try l.admitted(names.deploys_topic, dep, &.{0});
-    try expectOps(&.{opName(a, dep, 0)}, try l.ask(&.{.{ .key = "tokenId", .value = text(id) }}));
-    try expectOps(&.{}, try l.ask(&.{.{ .key = "authoritiesTokenId", .value = text(id) }}));
-    try expectOps(&.{opName(a, dep, 0)}, try l.ask(&.{ .{ .key = "txid", .value = text(id[0..64]) }, .{ .key = "outputIndex", .value = .{ .uint = 0 } } }));
     var h = try holdersAt(a, &l, tokOf(dep));
     try testing.expectEqual(@as(u64, 1), h.count);
     try testing.expectEqual(@as(u64, 1000), h.rows[0].balance);
@@ -2307,7 +2343,6 @@ test "deploys by what they hold (0.15.1): a supply deploy is a value output — 
     const t2 = rawSpend(a, &.{.{ .txid = did, .vout = 0 }}, &.{ valueOutOf(a, did, 600, &lockOf(B)), valueOutOf(a, did, 400, &lockOf(A)) });
     try l.admitted(tname, t2, &.{ 0, 1 });
     try l.spent(tname, dep, 0, t2);
-    try expectOps(&.{ opName(a, t2, 0), opName(a, t2, 1) }, try l.ask(&.{.{ .key = "tokenId", .value = text(id) }}));
     h = try holdersAt(a, &l, tokOf(dep));
     try testing.expectEqual(@as(u64, 2), h.count);
     try testing.expectEqual(@as(u64, 600), h.rows[0].balance);
@@ -2324,7 +2359,6 @@ test "deploys by what they hold (0.15.1): a supply deploy is a value output — 
     try expectOps(&.{}, try ask207(&l, ls.service_name, chain, try q207(a, "color-spendability", .{ .uint = 1 }, id, "tm_color", &.{dot0})));
     // The spend rejected: the deploy is a value output again, A holds the supply.
     try l.rejected(tname, t2);
-    try expectOps(&.{opName(a, dep, 0)}, try l.ask(&.{.{ .key = "tokenId", .value = text(id) }}));
     h = try holdersAt(a, &l, tokOf(dep));
     try testing.expectEqual(@as(u64, 1), h.count);
     try testing.expectEqual(@as(u64, 1000), h.rows[0].balance);
@@ -2338,9 +2372,9 @@ test "deploys by what they hold (0.15.1): a supply deploy is a value output — 
     const adot = dot(a, aut, 0);
     try l.admitted(aname, aut, &.{0});
     try l.admitted(names.deploys_topic, aut, &.{0});
-    try expectOps(&.{opName(a, aut, 0)}, try l.ask(&.{.{ .key = "authoritiesTokenId", .value = text(aidText) }}));
-    try expectOps(&.{}, try l.ask(&.{.{ .key = "tokenId", .value = text(aidText) }}));
     try testing.expectEqual(@as(u64, 0), (try holdersAt(a, &l, tokOf(aut))).count);
+    var asvc = try lookup.Service.loadIndex(a, l.s, ls.service_name, ls.index_name, ls.spec.maps, l.state);
+    try testing.expectEqual(@as(u64, 1), (try ls.countersOf(&asvc, &tokOf(aut))).authorities);
     for ([_][]const u8{ "color-admission", "color-spendability" }) |ty| {
         try expectOps(&.{opName(a, aut, 0)}, try ask207(&l, alname, null, try q207(a, ty, .{ .uint = 1 }, aidText, aname, &.{adot})));
         try expectOps(&.{opName(a, aut, 0)}, try ask207(&l, ls.service_name, null, try q207(a, ty, .{ .uint = 1 }, aidText, "tm_color", &.{adot})));
@@ -2375,6 +2409,7 @@ test "tokens q and after (0.16.0): symbol starts-with (ASCII case-insensitive) o
     const s = ms.store();
     const f = try Fixtures.init(a);
     var l: Ls = .{ .a = a, .s = s };
+    l.use();
     const t = names.deploys_topic;
 
     const da = symDeploy(a, 0x11, "AB");
@@ -2428,10 +2463,12 @@ test "tokens q and after (0.16.0): symbol starts-with (ASCII case-insensitive) o
     var ms2 = w.store.MemStore.init(testing.allocator);
     defer ms2.deinit();
     var l2: Ls = .{ .a = a, .s = ms2.store() };
+    l2.use();
     try l2.admitted(t, twice, &.{0});
     const q1 = w.header.toHex(w.beef.txidOf(twice))[0..1];
-    try testing.expectEqual(@as(usize, 2), (try ls.searched(a, @constCast(&try lookup.Service.loadIndex(a, ms2.store(), ls.service_name, ls.index_name, ls.spec.maps, l2.state)), q1)).len);
+    try testing.expectEqual(@as(usize, 2), (try ls.searched(a, q1)).len);
     try testing.expectEqual(@as(usize, 1), (try ls.tokens(a, ms2.store(), l2.state, null, null, .{ .q = q1 })).len);
+    l.use();
 
     // after: strictly after that token in the list's order, with and without q; limit as ever.
     for (full, 0..) |x, i| {
@@ -2472,4 +2509,70 @@ test "tokens q and after (0.16.0): symbol starts-with (ASCII case-insensitive) o
         .{ "q=%zz", "" },                         .{ "", "{\"q\":\"a\"}" },
     }) |cse| try testing.expectError(error.BadQuery, ls.parseTokensQuery(a, cse[0], cse[1]));
     _ = try ls.parseTokensQuery(a, "q=" ++ "a" ** 100, "");
+}
+
+test "symbol facts (0.18.0): a discovery deploy with a symbol emits `<app>/color/symbol/<hex(lower sym)>/<txid>.<vout>` {tokenId} once; its rejection {reverted: true}; none without a symbol; names under the app the call names" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ms = w.store.MemStore.init(testing.allocator);
+    defer ms.deinit();
+    const f = try Fixtures.init(a);
+    var l: Ls = .{ .a = a, .s = ms.store() };
+    l.use();
+    const t = names.deploys_topic;
+    const d = symDeploy(a, 0x31, "Ab");
+    const txid = w.beef.txidOf(d);
+    const want = try std.fmt.allocPrint(a, "1color/color/symbol/6162/{s}.0", .{&w.header.toHex(txid)});
+    try testing.expectEqualStrings(want, try ls.symbolName(a, "Ab", txid, 0));
+    try l.admitted(t, d, &.{0});
+    try testing.expectEqual(@as(usize, 1), l.events.len);
+    try testing.expectEqualStrings(want, l.events[0].getText("event").?);
+    try testing.expectEqualStrings(idString(a, txid, 0), l.events[0].getText("tokenId").?);
+    try testing.expectEqual(@as(usize, 2), l.events[0].map.len);
+    // A dupe admission emits nothing more; a deploy without a symbol nothing at all.
+    try l.admitted(t, d, &.{0});
+    try testing.expectEqual(@as(usize, 0), l.events.len);
+    try l.admitted(t, f.raws.get("token_deploy").?, &.{0});
+    try testing.expectEqual(@as(usize, 0), l.events.len);
+    try l.rejected(t, d);
+    try testing.expectEqual(@as(usize, 1), l.events.len);
+    try testing.expectEqualStrings(want, l.events[0].getText("event").?);
+    try testing.expect(l.events[0].getBool("reverted").?);
+    // Another app's names: the overlay's output facts and the lookup's own under it.
+    try ls.setApp("amm");
+    try testing.expectEqualStrings(try std.fmt.allocPrint(a, "amm/topic/output/{s}.3", .{&w.header.toHex(txid)}), try ls.topicOutputName(a, txid, 3));
+    try testing.expectEqualStrings(try std.fmt.allocPrint(a, "amm/color/burn/{s}", .{&w.header.toHex(txid)}), try ls.burnName(a, txid));
+    l.use();
+}
+
+test "spent (0.18.0): a coin is debited once — while its latest output fact is admitted; spendability is the chain state's" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ms = w.store.MemStore.init(testing.allocator);
+    defer ms.deinit();
+    var l: Ls = .{ .a = a, .s = ms.store() };
+    l.use();
+    var buf: [names.max_topic_len]u8 = undefined;
+    const tname = try a.dupe(u8, names.topicName(&buf, .{ .txid = id_a }));
+    const t1 = rawSpend(a, &.{.{ .txid = .{0x01} ** 32, .vout = 0 }}, &.{valueOut(a, 500, &lockOf(0x0a))});
+    const t2 = rawSpend(a, &.{.{ .txid = w.beef.txidOf(t1), .vout = 0 }}, &.{valueOut(a, 500, &lockOf(0x0b))});
+    try l.admitted(tname, t1, &.{0});
+    try l.admitted(tname, t2, &.{0});
+    try l.spent(tname, t1, 0, t2);
+    try l.spent(tname, t1, 0, t2); // a dupe: the fact says spent
+    try testing.expect((try balanceOf(a, &l, 0x0a)) == null);
+    try testing.expectEqual(@as(u64, 500), (try balanceOf(a, &l, 0x0b)).?);
+    try testing.expectEqual(@as(u64, 500), (try countersAt(a, &l)).supply);
+    // BRC-207 over the token's own name: admission spent or not; spendability by the chain state's spender.
+    var lb: [names.max_lookup_len]u8 = undefined;
+    const service = try a.dupe(u8, names.lookupName(&lb, .{ .txid = id_a }));
+    const asset = idString(a, id_a, 0);
+    const ops = [_][]const u8{ dot(a, t1, 0), dot(a, t2, 0) };
+    try expectOps(&.{ opName(a, t1, 0), opName(a, t2, 0) }, try ask207(&l, service, null, try q207(a, "color-admission", .{ .uint = 1 }, asset, tname, &ops)));
+    var ch = try lookup.Chain.load(a, ms.store(), null, .regtest);
+    _ = try ch.putTx(w.beef.txidOf(t2), t2);
+    const chain = try ch.save();
+    try expectOps(&.{opName(a, t2, 0)}, try ask207(&l, service, chain, try q207(a, "color-spendability", .{ .uint = 1 }, asset, tname, &ops)));
 }

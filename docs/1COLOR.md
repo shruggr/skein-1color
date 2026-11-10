@@ -15,7 +15,7 @@ BRC-207's `color` or this repo's `1color`, with no alias (CHANGELOG.md).
 | lookup service | `bin/color-lookup.wasm`, `src/color_lookup.zig` | `color-lookup` | `ls_color`: three queries over its index, and over `tm_color` BRC-207's two with `topic: "tm_color"` (0.12.1); `ls_color_<assetId>`: BRC-207's two queries (0.9.0); fn `tokens`: the token list, a read (0.7.0); one index, `<app>/ls_color`, for every name |
 | discovery topic | the same program as the topic manager | `color-topic` | `tm_color`: every token's deploy output |
 | the library | `src/lib.zig` (module `1color`) | | the parsers, the rules, topic names, the verdict |
-| the engine | `bin/overlay.wasm` | `overlay` | shruggr/skein-overlay 0.20.2: serves the topics and lookups, keeps the registered sets (`register` / `deregister`, `registerLookup` / `deregisterLookup`), answers the sync protocol `/skein/overlay/sync/1.0.0` by its filter `sync` on the manifest's libp2p row (0.11.0), and takes the BEEFs the host fetches on the receive row `/skein/overlay/beef/1.0.0` (filter `kernel.beef`, handler `overlay.submit`; 0.11.1; 0.13.1, skein-overlay 0.20.0: the host's own entry, not served to peers) |
+| the engine | `bin/overlay.wasm` | `overlay` | shruggr/skein-overlay 0.20.2: serves the topics and lookups, keeps the registered sets (`register` / `deregister`, `registerLookup` / `deregisterLookup`), answers the sync protocol `/skein/overlay/sync/1.0.0` by its filter `sync` on the manifest's libp2p row (0.11.0) (0.18.0, skein-overlay 0.25.1: no receive row; the host submits a fetched BEEF as the normal submit message) |
 
 The topic manager and the lookup service are programs on skein-overlay's
 contracts (`topic`, `lookup`). An app carries them in its tree with the
@@ -95,50 +95,20 @@ skein-overlay 0.11.0: the engine's hooks reach the program once per
 admitted transaction and topic, whatever its names, and every name reads
 the one index). The hooks go by the topic, never by the name.
 
-`ls_color`, the query shapes of the ts-stack BRC-162 lookup (Deggen's,
-`packages/overlays/topics`, its lookup docs). (David, 2026-10-29: "There
-should be no difference between what these things are looking up. The only
-difference is which topic the instance has got access to.") The first key
-present, in this order, answers:
+0.18.0 (a recognizer, agent-env plans/research/plan-pass-recognizers-2026-11-09.md): the three
+freeform queries (`{authoritiesTokenId}`, `{tokenId}`, `{txid, outputIndex}`) are GONE (no consumer).
+`ls_color` answers BRC-207's form with `topic: "tm_color"` only. Admission is the overlay's own fact
+`<app>/topic/output/<txid>.<vout>` (the latest not `reverted`), the asset checked by parsing the stored
+transaction (the fact names no topic); spendability adds the chain state's spender (skein-chain 0.9.0).
+The lookup stores only summaries (`balances`, `byBalance`, `holders`, `counters`) and emits
+`<app>/color/burn/<txid>` and `<app>/color/symbol/<hex(lower sym)>/<txid>.<vout>` (below).
 
-| query | answer |
-|---|---|
-| `{authoritiesTokenId, limit?, skip?}` | the token's unspent authority outputs, an authority-only deploy among them, in outpoint order |
-| `{tokenId, limit?, skip?}` | the token's unspent value outputs, a deploy that carries the supply among them, in outpoint order |
-| `{txid, outputIndex}` | the value or authority output at that outpoint, if unspent |
-
-- A token id is taken as `<txid>`, `<txid>_<vout>` or `<txid>.<vout>`
-  ("Token ids" above). Lowercase hex in display order; the vout decimal
-  without leading zeros.
-- `limit` 1 to 100 (default 100), `skip` 0 to 100000 (default 0). Any other
-  key, or a value out of shape, is refused.
-- Outpoint order is the txid in display order, then the output index (the
-  ts-stack sort).
-- The answer is an output-list of outpoints, with no token id strings. The
-  engine builds each output's BEEF from the chain state, and the service never
-  handles one. A client writes the token's id `<txid>_<vout>` (`<txid>_0`
-  at output 0) whatever the form of its deploy.
-
-**The index** is five maps under the head `<app>/ls_color`, kept by the
-lookup hooks the engine calls in the step that admits or rejects:
-
-| map | key | value |
-|---|---|---|
-| `values` | token ‖ outpoint | — |
-| `authorities` | token ‖ outpoint | — |
-| `outputs` | outpoint | kind ‖ token, then the spender's txid once spent |
-| `admitted` | token ‖ outpoint | — (every output the token's topic validly admitted, a JSON `burn` too; kept once spent, dropped on rejection: BRC-207) |
-| `deploys` | token | — (the discovery topic's, below) |
-
-(token: its deploy txid in display order ‖ vout, 4 bytes big-endian; an
-outpoint the same.) `admitted` classifies each admitted output by the rules
-for the topic's token, by what it holds: a value (a transfer, a mint, or a
-deploy that carries the supply) into `values`, an authority (an authority
-output, or an authority-only deploy) into `authorities`, a JSON `burn` into
-neither (0.15.1; until 0.15.0 every deploy went into `authorities`, an error). `spent`
-takes the output out of its index and records the spender. `rejected`
-removes the transaction's outputs and returns the outputs it had spent. A
-hook for a topic that is not a token's does nothing.
+Until 0.17.x the head `<app>/ls_color` also held five index maps (`values`, `authorities`,
+`outputs`, `admitted`, `deploys`) and `symbols` / `burns`; 0.18.0 drops them (the events above and the
+overlay's output facts carry what they found). An output is classified by the rules for the topic's
+token, by what it holds: a value (a transfer, a mint, or a deploy that carries the supply), an
+authority (an authority output, or an authority-only deploy), a JSON `burn` neither (0.15.1). A hook
+for a topic that is not a token's does nothing.
 
 ## BRC-207: a token's lookup
 
@@ -193,9 +163,10 @@ decimals, symbol, icon, ...).
   admitted, and nothing about governance is checked. The coins an admitted
   transaction spends are retained.
 - Its lookup is `ls_color` (0.12.0; `ls_color_deploys`, a mode of the
-  program by name, until 0.11.x: gone, no alias). The topic feeds the map
-  `deploys` (token → nothing; a token id is its deploy outpoint), in the
-  program's one index: every deploy the topic admitted. A deploy is asked
+  program by name, until 0.11.x: gone, no alias). Every deploy the topic
+  admitted is an output whose latest `<app>/topic/output` fact is not
+  `reverted` (0.18.0; the map `deploys` until 0.17.x; a token id is its
+  deploy outpoint). A deploy is asked
   by BRC-207's query (0.12.1; David, 2026-10-29: BRC-207's form, not one of
   ours), the topic `tm_color`:
 
@@ -246,19 +217,20 @@ runs as the route's filter over the current state and answers `{answer:
   beside `ids`. The answer stays the plain array (no `next`: the cursor is
   the last row's `tokenId`).
 
-  `q` never reads every token: the symbol side reads the map `symbols`
-  (the deploy's `sym` ASCII lower-cased ‖ its token key → nothing),
-  written by `admitted` beside `deploys` and removed by `rejected` with
-  it, by the prefix; the id side reads `deploys` by the key range the
-  text's leading hex digits span. No backfill: a deploy admitted before
+  `q` (0.18.0): the symbol side reads the facts
+  `<app>/color/symbol/<hex(lower sym)>/<txid>.<vout>` under the prefix of
+  `q` lower-cased (emitted by `admitted`, reverted by `rejected`); the id
+  side reads the `<app>/topic/output/<hex>` facts under the text's leading
+  hex digits. Every list request reads every output fact's name (the event
+  read pages by place, not by name). No backfill: a deploy admitted before
   0.16.0 has no `symbols` row (it is found by its id, not by its symbol).
   A resubmit of its BEEF does not write one: the engine calls the hooks
   only for a judgement it records, and an applied transaction is a dupe.
   `after`'s place is read from the chain state by its key (its height and
   position), never by walking the list.
 - **Answer**: 200 (`Cache-Control: public, max-age=5`), a JSON array, one entry per deploy the discovery topic
-  `tm_color` admitted (the map `deploys` of the program's index,
-  `<app>/ls_color`; nothing when the topic is not registered):
+  `tm_color` admitted (0.18.0: the overlay's output facts that are deploys;
+  nothing when the topic is not registered):
 
   ```
   [{tokenId, topic, sym, dec, iconUrl?, txid, vout}]
@@ -344,16 +316,17 @@ token, plain counters written as its hooks move outputs and unwound by a rejecti
 | map | key → value |
 |---|---|
 | `counters` | `tok → supply ‖ authorities ‖ burned ‖ burns` (4 × u64 BE) |
-| `burns` | `tok ‖ txid (internal order) → amount ‖ at` (2 × u64 BE), one row per transaction that burned |
 
-- `supply`: the circulating supply, the amounts of the unspent value outputs (`values`, a supply-holding
-  deploy among them): value outputs admitted minus value inputs consumed, moved exactly as `values` is.
-- `authorities`: the count of unspent authority outputs (`authorities`' members, moved the same way).
-- `burned`, `burns`: a transaction whose consumed value inputs (the token's, as the index filed them)
-  carry more of the token than its admitted value outputs burns the difference: its `burns` row, the
-  total, and a `burn` event (the pool events' shape: `{event: "burn", topic: "ls_color_<tokenId>",
-  tokenId, row: {kind: "burn", txid, amount, at}}`, `at` the step's time in ms). Its rejection removes
-  the row, debits the total and emits `row: {kind: "revert", txid, amount, at}`.
+- `supply`: the circulating supply, the amounts of the token's unspent value outputs (a supply-holding
+  deploy among them): value outputs admitted minus value inputs consumed.
+- `authorities`: the count of unspent authority outputs.
+- `burned`, `burns`: a transaction whose consumed value inputs (the token's outputs the overlay admitted)
+  carry more of the token than its admitted value outputs burns the difference: the total, and (0.18.0)
+  the fact `<app>/color/burn/<txid hex>` `{tokenId, amount, at}` (`at` the step's time in ms). Its
+  rejection debits the total and emits `{reverted: true}` under the same name. (Before 0.18.0: a `burns`
+  map and a bare `burn` event, which the kernel's name rule now refuses.)
+- 0.18.0: a discovery deploy with a symbol emits `<app>/color/symbol/<hex(lower sym)>/<txid>.<vout>`
+  `{tokenId}` (the token list's `q`), `{reverted: true}` on its rejection.
 
 Read: `<token>/holders` answers them beside `count` and `rows`. No backfill: outputs indexed before
 0.17.0 are not counted (a debit stops at zero; rebuild the index).

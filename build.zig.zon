@@ -6,8 +6,8 @@
     .dependencies = .{
         // The topic and lookup contracts; the SDK (chain, app, sk, cbor) comes through it.
         .skein_overlay = .{
-            .url = "https://github.com/shruggr/skein-overlay/archive/refs/tags/v0.23.0.tar.gz",
-            .hash = "skein_overlay-0.23.0-IMuNgelRJgBVdQ8E_2DvYfc7gr9-DJUsaFcttgFPDkqC",
+            .url = "https://github.com/shruggr/skein-overlay/archive/refs/tags/v0.25.1.tar.gz",
+            .hash = "skein_overlay-0.25.1-IMuNgUUGJABpIUKh2i4-EoPiJe75bA-PglODknEoa46T",
         },
     },
     .paths = .{

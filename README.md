@@ -203,9 +203,6 @@ where the embedding app serves no overlay (the Open Exchange's swap site).
 
 ```
 POST <base>/lookup
-{"service": "ls_color", "query": {"tokenId": "<txid>_0", "limit": 10}}
-{"service": "ls_color", "query": {"authoritiesTokenId": "<txid>"}}
-{"service": "ls_color", "query": {"txid": "<txid>", "outputIndex": 1}}
 {"service": "ls_color", "query": {"type": "color-admission", "version": 1, "assetId": "<txid>_<vout>", "topic": "tm_color", "outpoints": ["<txid>.<vout>"]}}
 {"service": "ls_color_<txid>_0", "query": {"type": "color-spendability", "version": 1, "assetId": "<txid>_0", "topic": "tm_color_<txid>_0", "outpoints": ["<txid>.1"]}}
 {"service": "ls_color_<txid>_0", "query": {"type": "color-admission", "version": 1, "assetId": "<txid>_0", "topic": "tm_color_<txid>_0", "outpoints": ["<txid>.1"]}}
@@ -320,15 +317,8 @@ AMM) carries these in its tree and manifest:
      handler: a peer's sync frames (the locator, the admitted lists, a
      transaction's BEEF) are answered by the engine's filter, a read,
      nothing logged. An app that declares no such row does not serve sync.
-   - **The receive row** (0.11.1, skein-overlay 0.15.0; 0.13.1):
-     `{"transport": "libp2p", "address": "/skein/overlay/beef/1.0.0",
-     "filters": ["kernel.beef"], "handler": "overlay.submit"}`: the host's
-     own entry, not served to peers (skein-overlay 0.20.0: skein's host
-     never handles it inbound). Each Atomic BEEF the host fetches — on a
-     peer's admit, from a peer's tail list, in a pull of mined history — is
-     handed to this row as from the peer it came from (skein
-     `src/host/sync.ts`). Without it the host refuses every fetched BEEF
-     ("no route for libp2p:/skein/overlay/beef/1.0.0").
+   - **The receive row** is gone (0.18.0, skein-overlay 0.25.1): the host
+     submits a fetched BEEF as the normal submit message.
 4. **The register calls**, made by root once the app is installed, two
    per token it runs: `{"fn": "register", "args": {"topic":
    "tm_color_<assetId>", "program": "color-topic"}}`, then `{"fn":
