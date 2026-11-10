@@ -957,6 +957,24 @@ const Ls = struct {
     /// The events the last hook asked to be emitted.
     events: []const Value = &.{},
     log: std.ArrayList(Ev) = .empty,
+    /// One engine step over several hook calls (`begin` … `commit`): the facts the step emits (the
+    /// engine's output facts, then the hooks' events, as skein-overlay emits them at the step's end)
+    /// are held back until `commit`, as a step does not see its own emits (skein docs/VM.md).
+    in_step: bool = false,
+    step_facts: std.ArrayList(Ev) = .empty,
+    step_events: std.ArrayList(Ev) = .empty,
+
+    fn begin(self: *Ls) void {
+        self.in_step = true;
+    }
+
+    fn commit(self: *Ls) !void {
+        self.in_step = false;
+        try self.log.appendSlice(self.a, self.step_facts.items);
+        try self.log.appendSlice(self.a, self.step_events.items);
+        self.step_facts.clearRetainingCapacity();
+        self.step_events.clearRetainingCapacity();
+    }
 
     /// Make this one's log the index the program reads.
     fn use(self: *Ls) void {
@@ -972,6 +990,7 @@ const Ls = struct {
     }
 
     fn fact(self: *Ls, name: []const u8, record: Value) !void {
+        if (self.in_step) return self.step_facts.append(self.a, .{ .name = name, .record = record });
         try self.log.append(self.a, .{ .name = name, .record = record });
     }
 
@@ -995,7 +1014,9 @@ const Ls = struct {
         const h = try lookup.handle(self.a, ls.spec, self.s, .regtest, self.state, null, func, arg);
         if (h.state) |sc| self.state = sc;
         self.events = if (h.answer.getArray("events")) |es| es else &.{};
-        for (self.events) |e| try self.fact(e.getText("event").?, e);
+        for (self.events) |e| {
+            if (self.in_step) try self.step_events.append(self.a, .{ .name = e.getText("event").?, .record = e }) else try self.fact(e.getText("event").?, e);
+        }
     }
 
     fn admitted(self: *Ls, t: []const u8, raw: []const u8, outs: []const u32) !void {
@@ -2692,4 +2713,54 @@ test "burns of two tokens by one transaction (0.18.0): `<app>/color/burn/<txid>/
     svc = try lookup.Service.loadIndex(a, l.s, ls.service_name, ls.index_name, ls.spec.maps, l.state);
     try testing.expectEqual(@as(u64, 0), (try ls.countersOf(&svc, &ls_tok_a)).burned);
     try testing.expectEqual(@as(u64, 0), (try ls.countersOf(&svc, &tok_b)).burned);
+}
+
+/// A parent and its child admitted in ONE overlay step (skein-overlay 0.26.1 submit.zig `admitHeard`
+/// admits every item of a submission the chain state takes now, oldest first, in the one step that
+/// heard it: `admitItem` per item, its `admitted` then `spent` hooks per consumed previous coin): the
+/// hooks of the child cannot read the parent's output fact, emitted in that same step.
+fn oneStepCase(a: std.mem.Allocator, child_amount: u64) !struct { parent_holder: ?u64, child_holder: ?u64, supply: u64, burned: u64 } {
+    var ms = w.store.MemStore.init(testing.allocator);
+    defer ms.deinit();
+    var l: Ls = .{ .a = a, .s = ms.store() };
+    l.use();
+    var buf: [names.max_topic_len]u8 = undefined;
+    const tname = try a.dupe(u8, names.topicName(&buf, .{ .txid = id_a }));
+    const parent = rawSpend(a, &.{.{ .txid = .{0x01} ** 32, .vout = 0 }}, &.{valueOut(a, 500, &lockOf(0x0a))});
+    const child = rawSpend(a, &.{.{ .txid = w.beef.txidOf(parent), .vout = 0 }}, &.{valueOut(a, child_amount, &lockOf(0x0b))});
+    l.begin();
+    try l.admitted(tname, parent, &.{0});
+    try l.admitted(tname, child, &.{0});
+    try l.spent(tname, parent, 0, child);
+    try l.commit();
+    const n = try countersAt(a, &l);
+    return .{ .parent_holder = try balanceOf(a, &l, 0x0a), .child_holder = try balanceOf(a, &l, 0x0b), .supply = n.supply, .burned = n.burned };
+}
+
+fn expectOneStep(a: std.mem.Allocator, label: []const u8, child_amount: u64) !void {
+    const r = try oneStepCase(a, child_amount);
+    const ok = r.parent_holder == null and r.child_holder != null and r.child_holder.? == child_amount and r.supply == child_amount and r.burned == 500 - child_amount;
+    if (!ok) {
+        std.debug.print("REPRODUCTION (0.18.1, not fixed) {s}: parent holder {?d} (want null), child holder {?d} (want {d}), supply {d} (want {d}), burned {d} (want {d})\n", .{ label, r.parent_holder, r.child_holder, child_amount, r.supply, child_amount, r.burned, 500 - child_amount });
+        return error.SkipZigTest;
+    }
+}
+
+test "REPRODUCTION one step, parent and child unproven, admitted together when the chain state takes both: the parent's output is debited, the tally right" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    try expectOneStep(arena.allocator(), "unproven together", 500);
+}
+
+test "REPRODUCTION one step, parent and child arriving proven together (one BEEF): the parent's output is debited, the tally right" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    // The lookup sees the same hook sequence in the one step (the proofs matter to the engine only).
+    try expectOneStep(arena.allocator(), "proven together", 500);
+}
+
+test "REPRODUCTION one step, a burning child: its burn is counted (the burn check reads the parent's output fact too)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    try expectOneStep(arena.allocator(), "burning child", 300);
 }

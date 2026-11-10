@@ -4,6 +4,17 @@ Released versions of skein-1color (skein-mandala until 0.9.2). Versions
 before 0.10.0 are in the git history (each release commit names what
 changed).
 
+## 0.18.1 (branch `repin-0.26.1`, not released)
+
+Re-pin: skein-overlay v0.26.0 → v0.26.1 (skein-sdk v0.21.0; skein-chain 0.11.0 for `chain/1`).
+
+- `build.zig.zon` the tag's URL and hash; `bin/overlay.wasm` the tag's committed engine;
+  `bin/color-lookup.wasm` rebuilt; `etc/app.json` 0.18.1 (the overlay's manifest rows are unchanged).
+  No code change was forced.
+- REPRODUCED, NOT FIXED: a parent and child admitted in one overlay step leave the parent's output
+  undebited (the child's `spent` hook and burn check read the parent's output fact, not yet visible in
+  that step). Three tests named `REPRODUCTION …` skip with the numbers. zig 45 pass, 3 skipped.
+
 ## 0.18.0 (2026-11-09)
 
 The color lookup as a recognizer (agent-env plans/research/plan-pass-recognizers-2026-11-09.md, its
