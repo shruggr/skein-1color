@@ -4,6 +4,24 @@ Released versions of skein-1color (skein-mandala until 0.9.2). Versions
 before 0.10.0 are in the git history (each release commit names what
 changed).
 
+## 0.19.0 (branch `ledger-0.19`, not released)
+
+The lookup on skein-overlay v0.27.0 (a lookup raises its own events) and skein 0.8.0 (a step reads its
+own events). Fixes the one-step parent+child defect reproduced in 0.18.1.
+
+- Re-pin: skein-overlay v0.26.1 → v0.27.0 (skein-sdk v0.21.0 through it); `bin/overlay.wasm` the tag's.
+- `color-lookup` raises its facts with `Service.emit` and reads them with `Service.events` /
+  `Service.latest` under `Service.app` (the global event reader, the global app name and the local
+  `events` import are gone); a read route's service gets the VM's kernel. Nothing is handed back.
+- No logic change in the hooks: each reads the facts it needs by name. On skein 0.8.0 the parent's
+  `topic/output` fact raised earlier in the step is read, so a parent and child admitted in one step
+  debit the parent's output and count a burn. The three 0.18.1 reproductions are real tests now.
+- Test harness: a kernel over one log, every fact visible to every later hook at once; an item's
+  output facts raised after its hooks (skein-overlay `admitItem`). `begin`/`commit` are gone.
+- `equiv/color-ledger.ts`: D, a transfer and a burning transfer, mined together and posted in ONE BEEF,
+  admitted in one step on a real kernel → holders, supply, burned right; replay exact.
+- `etc/app.json` and `build.zig.zon` 0.19.0; the lookup's metadata version 0.7.0. zig 48.
+
 ## 0.18.1 (branch `repin-0.26.1`, not released)
 
 Re-pin: skein-overlay v0.26.0 → v0.26.1 (skein-sdk v0.21.0; skein-chain 0.11.0 for `chain/1`).

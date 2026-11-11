@@ -145,47 +145,29 @@ fn storedTx(a: Allocator, s: c.store.Store, txid: [32]u8) ?c.bsvz.transaction.Tr
 
 // ---------------------------------------------------------------- the event index (0.18.0)
 
-/// A read of the kernel's event index (skein docs/VM.md "The event index"): the query `{name |
-/// prefix, after?, limit?, latest?}` → `[{name, place, cid, record}]`, newest last. Set by `run`
-/// to the `events` import; a native test sets its own. Null: no index to read (error.NoEventIndex).
-pub const EventsFn = *const fn (a: Allocator, query: Value) anyerror!Value;
-pub var events_fn: ?EventsFn = null;
-
-var app_buf: [256]u8 = undefined;
-/// The app the call names (`<app>`, the first segment of every event name it reads or emits; the
-/// engine names it in every hook and lookup call, a read route by its row). Set by `run`.
-pub var app_name: []const u8 = "1color";
-
-pub fn setApp(app: []const u8) !void {
-    if (app.len > app_buf.len) return error.BadArgs;
-    @memcpy(app_buf[0..app.len], app);
-    app_name = app_buf[0..app.len];
-}
+// Every fact is read and raised through the service's kernel (skein-overlay 0.27.0 `Service.emit`,
+// `Service.events`, `Service.latest`; the app every name is under is `svc.app`). With skein 0.8.0 a
+// step sees its own events: a fact raised earlier in the same step (the overlay's for an item admitted
+// before, or this lookup's own) is read like any other.
 
 /// One fact read back: its name and its record.
 pub const Fact = struct { name: []const u8, record: Value };
 
-fn readFacts(a: Allocator, key: []const u8, name: []const u8, latest: bool) ![]const Fact {
-    const f = events_fn orelse return error.NoEventIndex;
-    var es: std.ArrayList(c.cbor.Entry) = .empty;
-    try es.append(a, .{ .key = key, .value = .{ .text = name } });
-    if (latest) try es.append(a, .{ .key = "latest", .value = .{ .boolean = true } });
-    const v = try f(a, .{ .map = es.items });
+/// The latest record under exactly `name`, or null.
+fn latestOf(svc: *Service, name: []const u8) !?Value {
+    return svc.latest(name);
+}
+
+/// The latest fact under every name `prefix` starts (one per name).
+fn latestUnder(a: Allocator, svc: *Service, prefix: []const u8) ![]const Fact {
+    const v = try svc.events(.{ .map = try a.dupe(c.cbor.Entry, &.{
+        .{ .key = "prefix", .value = .{ .text = prefix } },
+        .{ .key = "latest", .value = .{ .boolean = true } },
+    }) });
     if (v != .array) return error.BadEvents;
     const out = try a.alloc(Fact, v.array.len);
     for (v.array, out) |row, *o| o.* = .{ .name = row.getText("name") orelse return error.BadEvents, .record = row.get("record") orelse return error.BadEvents };
     return out;
-}
-
-/// The latest fact under exactly `name`, or null.
-fn latestOf(a: Allocator, name: []const u8) !?Value {
-    const fs = try readFacts(a, "name", name, true);
-    return if (fs.len == 0) null else fs[fs.len - 1].record;
-}
-
-/// The latest fact under every name `prefix` starts (one per name, in place order).
-fn latestUnder(a: Allocator, prefix: []const u8) ![]const Fact {
-    return readFacts(a, "prefix", prefix, true);
 }
 
 fn isReverted(r: Value) bool {
@@ -194,16 +176,16 @@ fn isReverted(r: Value) bool {
 
 /// The overlay's name for an output's standing (skein-overlay 0.25.1 submit.zig `topicOutputName`):
 /// `<app>/topic/output/<txid hex>.<vout>`.
-pub fn topicOutputName(a: Allocator, txid: [32]u8, vout: u32) ![]const u8 {
-    return std.fmt.allocPrint(a, "{s}/topic/output/{s}.{d}", .{ app_name, &c.header.toHex(txid), vout });
+pub fn topicOutputName(a: Allocator, app: []const u8, txid: [32]u8, vout: u32) ![]const u8 {
+    return std.fmt.allocPrint(a, "{s}/topic/output/{s}.{d}", .{ app, &c.header.toHex(txid), vout });
 }
 
 pub const OutputState = enum { admitted, spent, reverted };
 pub const OutputFact = struct { state: OutputState, spent_by: ?[32]u8 = null };
 
 /// The latest `<app>/topic/output/<txid>.<vout>` fact, or null (never admitted here).
-pub fn outputFact(a: Allocator, txid: [32]u8, vout: u32) !?OutputFact {
-    const r = (try latestOf(a, try topicOutputName(a, txid, vout))) orelse return null;
+pub fn outputFact(a: Allocator, svc: *Service, txid: [32]u8, vout: u32) !?OutputFact {
+    const r = (try latestOf(svc, try topicOutputName(a, svc.app, txid, vout))) orelse return null;
     return try outputFactOf(r);
 }
 
@@ -231,26 +213,26 @@ fn outpointOfName(name: []const u8) ?lookup.Output {
 
 /// The burn of token `id` by `txid`: `<app>/color/burn/<txid hex>/<tokenId>` (one name per token, so a
 /// transaction burning two tokens on one instance has both).
-pub fn burnName(a: Allocator, txid: [32]u8, id: bsv21.TokenId) ![]const u8 {
-    return std.fmt.allocPrint(a, "{s}/color/burn/{s}/{s}", .{ app_name, &c.header.toHex(txid), try tokenIdTextAlloc(a, id) });
+pub fn burnName(a: Allocator, app: []const u8, txid: [32]u8, id: bsv21.TokenId) ![]const u8 {
+    return std.fmt.allocPrint(a, "{s}/color/burn/{s}/{s}", .{ app, &c.header.toHex(txid), try tokenIdTextAlloc(a, id) });
 }
 
 /// The prefix of a symbol's names, `<app>/color/symbol/<hex(lower sym)>` (a hex prefix of a
 /// symbol's names is a prefix of its own: hex keeps a byte prefix a prefix).
-fn symbolPrefix(a: Allocator, lower: []const u8) ![]const u8 {
+fn symbolPrefix(a: Allocator, app: []const u8, lower: []const u8) ![]const u8 {
     const digits = "0123456789abcdef";
     const hex = try a.alloc(u8, lower.len * 2);
     for (lower, 0..) |x, i| {
         hex[2 * i] = digits[x >> 4];
         hex[2 * i + 1] = digits[x & 15];
     }
-    return std.fmt.allocPrint(a, "{s}/color/symbol/{s}", .{ app_name, hex });
+    return std.fmt.allocPrint(a, "{s}/color/symbol/{s}", .{ app, hex });
 }
 
 /// A deploy's symbol name: `<app>/color/symbol/<hex(lower sym)>/<txid hex>.<vout>`.
-pub fn symbolName(a: Allocator, sym: []const u8, txid: [32]u8, vout: u32) ![]const u8 {
+pub fn symbolName(a: Allocator, app: []const u8, sym: []const u8, txid: [32]u8, vout: u32) ![]const u8 {
     const lower = try std.ascii.allocLowerString(a, sym);
-    return std.fmt.allocPrint(a, "{s}/{s}.{d}", .{ try symbolPrefix(a, lower), &c.header.toHex(txid), vout });
+    return std.fmt.allocPrint(a, "{s}/{s}.{d}", .{ try symbolPrefix(a, app, lower), &c.header.toHex(txid), vout });
 }
 
 fn tokenIdTextAlloc(a: Allocator, id: bsv21.TokenId) ![]const u8 {
@@ -335,7 +317,7 @@ fn burnCheck(a: Allocator, svc: *Service, id: bsv21.TokenId, tk: []const u8, tx:
     var in_sum: u128 = 0;
     for (tx.tx.inputs) |in| {
         const po = in.previous_outpoint;
-        const f = (try outputFact(a, po.txid.bytes, po.index)) orelse continue;
+        const f = (try outputFact(a, svc, po.txid.bytes, po.index)) orelse continue;
         switch (f.state) {
             .admitted => {},
             .spent => if (f.spent_by == null or !eql(u8, &f.spent_by.?, &tx.txid)) continue,
@@ -350,8 +332,8 @@ fn burnCheck(a: Allocator, svc: *Service, id: bsv21.TokenId, tk: []const u8, tx:
         out_sum += f.amount;
     }
     if (in_sum <= out_sum) return;
-    const name = try burnName(a, tx.txid, id);
-    if (try latestOf(a, name)) |r| if (!isReverted(r)) return;
+    const name = try burnName(a, svc.app, tx.txid, id);
+    if (try latestOf(svc, name)) |r| if (!isReverted(r)) return;
     const amount: u64 = std.math.cast(u64, in_sum - out_sum) orelse std.math.maxInt(u64);
     var n = try countersOf(svc, tk);
     n.burned = std.math.add(u64, n.burned, amount) catch std.math.maxInt(u64);
@@ -366,8 +348,8 @@ fn burnCheck(a: Allocator, svc: *Service, id: bsv21.TokenId, tk: []const u8, tx:
 
 /// A rejected `tx`'s burn, unwound: the total debited by the amount its fact carries, `{reverted: true}` emitted.
 fn burnUndo(a: Allocator, svc: *Service, id: bsv21.TokenId, tk: []const u8, txid: [32]u8) !void {
-    const name = try burnName(a, txid, id);
-    const r = (try latestOf(a, name)) orelse return;
+    const name = try burnName(a, svc.app, txid, id);
+    const r = (try latestOf(svc, name)) orelse return;
     if (isReverted(r)) return;
     const amount = r.getUint("amount") orelse return error.BadEvents;
     var n = try countersOf(svc, tk);
@@ -456,16 +438,18 @@ pub fn symOfDeploy(a: Allocator, id: bsv21.TokenId, txid: [32]u8, vout: u32, scr
 }
 
 /// A deploy's symbol fact name, null when it has no symbol.
-fn deploySymbolName(a: Allocator, id: bsv21.TokenId, txid: [32]u8, vout: u32, script: []const u8) !?[]const u8 {
+fn deploySymbolName(a: Allocator, app: []const u8, id: bsv21.TokenId, txid: [32]u8, vout: u32, script: []const u8) !?[]const u8 {
     const sym = (try symOfDeploy(a, id, txid, vout, script)) orelse return null;
     if (sym.len == 0) return null;
-    return try symbolName(a, sym, txid, vout);
+    return try symbolName(a, app, sym, txid, vout);
 }
 
 // The hooks come once per admitted transaction and topic, under whichever of the program's names
-// listens first (skein-overlay 0.11.0): they go by the topic, never by the name. Every prior fact
-// they read is an earlier step's (an in-step read does not see the step's own emits, skein
-// docs/VM.md): the overlay emits this admission's `topic/output` facts after the hooks.
+// listens first (skein-overlay 0.11.0): they go by the topic, never by the name. Each reads the facts
+// it needs by name and acts on what they say (skein 0.8.0: a step sees its own events, so an item
+// admitted earlier in the same step is read like any other). The overlay raises an item's own
+// `topic/output` facts after that item's hooks (skein-overlay 0.27.0 submit.zig `admitItem`), so an
+// item's hooks find its outputs without a fact: not yet credited.
 
 fn admitted(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx, outputs_to_admit: []const u32, _: []const u32) anyerror!void {
     if (eql(u8, topic, deploys_topic)) {
@@ -473,8 +457,8 @@ fn admitted(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx, outpu
             if (vout >= tx.tx.outputs.len) return error.BadArgs;
             const script = tx.tx.outputs[vout].locking_script.bytes;
             const id = (try token.deployOf(a, tx.txid, vout, script)) orelse continue;
-            const name = (try deploySymbolName(a, id, tx.txid, vout, script)) orelse continue;
-            if (try latestOf(a, name)) |r| if (!isReverted(r)) continue;
+            const name = (try deploySymbolName(a, svc.app, id, tx.txid, vout, script)) orelse continue;
+            if (try latestOf(svc, name)) |r| if (!isReverted(r)) continue;
             try emitFact(a, svc, name, &.{.{ .key = "tokenId", .value = .{ .text = try tokenIdTextAlloc(a, id) } }});
         }
         return;
@@ -487,7 +471,7 @@ fn admitted(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx, outpu
         if (vout >= tx.tx.outputs.len) return error.BadArgs;
         _ = (try kindOf(a, id, tx, vout)) orelse continue;
         // Already credited when the overlay has it standing (a dupe hook call credits nothing).
-        if (standing(try outputFact(a, tx.txid, vout))) continue;
+        if (standing(try outputFact(a, svc, tx.txid, vout))) continue;
         try outputMoved(a, svc, id, tx.txid, tx.tx, vout, true);
     }
 }
@@ -499,7 +483,7 @@ fn spent(a: Allocator, svc: *Service, topic: []const u8, outpoint: lookup.Outpoi
     // another (skein-overlay 0.26.0: a PROVEN B admitted against a held unmined A; B's hooks run before
     // A's `rejected`) was debited at A's spend: its spender is now B by the overlay's fact, and nothing
     // moves again.
-    const f = (try outputFact(a, outpoint.txid, outpoint.vout)) orelse return;
+    const f = (try outputFact(a, svc, outpoint.txid, outpoint.vout)) orelse return;
     if (f.state != .admitted) return;
     try storedMoved(a, svc, id, outpoint.txid, outpoint.vout, false);
 }
@@ -508,8 +492,8 @@ fn rejected(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx) anyer
     if (eql(u8, topic, deploys_topic)) {
         for (tx.tx.outputs, 0..) |o, vout| {
             const id = (try token.deployOf(a, tx.txid, @intCast(vout), o.locking_script.bytes)) orelse continue;
-            const name = (try deploySymbolName(a, id, tx.txid, @intCast(vout), o.locking_script.bytes)) orelse continue;
-            const r = (try latestOf(a, name)) orelse continue;
+            const name = (try deploySymbolName(a, svc.app, id, tx.txid, @intCast(vout), o.locking_script.bytes)) orelse continue;
+            const r = (try latestOf(svc, name)) orelse continue;
             if (!isReverted(r)) try emitReverted(a, svc, name);
         }
         return;
@@ -519,7 +503,7 @@ fn rejected(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx) anyer
     try burnUndo(a, svc, id, &tokKey(id), tx.txid);
     // Its outputs still unspent leave (a spent one was debited by its spender).
     for (0..tx.tx.outputs.len) |vout| {
-        const f = (try outputFact(a, tx.txid, @intCast(vout))) orelse continue;
+        const f = (try outputFact(a, svc, tx.txid, @intCast(vout))) orelse continue;
         if (f.state == .admitted) try outputMoved(a, svc, id, tx.txid, tx.tx, @intCast(vout), false);
     }
     // What it spent is unspent again: only the inputs the engine gives back (skein-overlay 0.26.0
@@ -528,7 +512,7 @@ fn rejected(a: Allocator, svc: *Service, topic: []const u8, tx: lookup.Tx) anyer
     for (tx.tx.inputs, 0..) |in, i| {
         if (svc.given_back) |g| if (std.mem.indexOfScalar(u32, g, @intCast(i)) == null) continue;
         const po = in.previous_outpoint;
-        const f = (try outputFact(a, po.txid.bytes, po.index)) orelse continue;
+        const f = (try outputFact(a, svc, po.txid.bytes, po.index)) orelse continue;
         if (f.state != .spent) continue;
         const by = f.spent_by orelse continue;
         if (!eql(u8, &by, &tx.txid)) continue;
@@ -617,7 +601,7 @@ pub fn answer207(a: Allocator, svc: *Service, ch: *lookup.Chain, q: Brc207) ![]c
             // The discovery topic admits a token's deploy output, at the token id's outpoint.
             if (!eql(u8, &opKey(o.txid, o.vout), &tk)) continue;
         }
-        if (!standing(try outputFact(a, o.txid, o.vout))) continue;
+        if (!standing(try outputFact(a, svc, o.txid, o.vout))) continue;
         if (!(try isAssetOutput(a, svc.store, q.id, o, q.discovery))) continue;
         if (q.kind == .spendability and (try spentByChain(ch, o)) != null) continue;
         try out.append(a, o);
@@ -669,7 +653,7 @@ pub fn metadata(a: Allocator, service: []const u8) anyerror!lookup.Metadata {
     };
 }
 
-pub const version = "0.6.0";
+pub const version = "0.7.0";
 
 pub fn documentation(_: Allocator, service: []const u8) anyerror![]const u8 {
     if (color.name.tokenIdOfLookup(service) != null) return
@@ -1032,16 +1016,17 @@ fn restrictedName(n: []const u8) bool {
 /// 0.16.0: a non-empty `q` lists only the tokens `searched` finds (the same rows, in the same order);
 /// `after` only the rows strictly after that token in the order (its own place read from the chain
 /// state by its key), error.UnknownAfter when the discovery topic admitted no such deploy.
-pub fn tokens(a: Allocator, s: c.store.Store, _: ?[]const u8, chain_state: ?[]const u8, overlay_state: ?[]const u8, q: TokensQuery) ![]const Listed {
+pub fn tokens(a: Allocator, svc: *Service, chain_state: ?[]const u8, overlay_state: ?[]const u8, q: TokensQuery) ![]const Listed {
+    const s = svc.store;
     var placed = try Placed.load(a, s, overlay_state);
     // The chain app's state through the SDK's one opener (shruggr/skein-sdk#1): its record's network, else main.
     var ch = try c.open(a, s, chain_state, .main);
     const after: ?Age = if (q.after) |t| blk: {
         const key = try a.dupe(u8, &(tokenKeyOf(t) orelse return error.BadQuery));
-        if (!(try isListed(a, s, key))) return error.UnknownAfter;
+        if (!(try isListed(a, svc, key))) return error.UnknownAfter;
         break :blk try ageOf(&ch, key);
     } else null;
-    const keys: []const []const u8 = if (q.q) |text| (if (text.len > 0) try searched(a, text) else try allDeploys(a)) else try allDeploys(a);
+    const keys: []const []const u8 = if (q.q) |text| (if (text.len > 0) try searched(a, svc, text) else try allDeploys(a, svc)) else try allDeploys(a, svc);
     var ages: std.ArrayList(Age) = .empty;
     for (keys) |k| {
         if (k.len != 36) return error.BadIndex;
@@ -1068,9 +1053,10 @@ pub fn tokens(a: Allocator, s: c.store.Store, _: ?[]const u8, chain_state: ?[]co
 
 /// Whether the deploy at `key` (txid display ‖ vout BE) is on the list: the overlay has it admitted
 /// and its stored output is a deploy.
-fn isListed(a: Allocator, s: c.store.Store, key: []const u8) !bool {
+fn isListed(a: Allocator, svc: *Service, key: []const u8) !bool {
+    const s = svc.store;
     const op = opOf(key);
-    if (!standing(try outputFact(a, op.txid, op.vout))) return false;
+    if (!standing(try outputFact(a, svc, op.txid, op.vout))) return false;
     const t = storedTx(a, s, op.txid) orelse return false;
     if (op.vout >= t.outputs.len) return false;
     return (try token.deployOf(a, op.txid, op.vout, t.outputs[op.vout].locking_script.bytes)) != null;
@@ -1078,9 +1064,9 @@ fn isListed(a: Allocator, s: c.store.Store, key: []const u8) !bool {
 
 /// The keys of the outputs whose latest fact under `prefix` (a `<app>/topic/output/…` prefix) is not
 /// `reverted`, in name order; a row that is no deploy is dropped by the reader (`listedOf`).
-fn standingUnder(a: Allocator, prefix: []const u8) ![]const []const u8 {
+fn standingUnder(a: Allocator, svc: *Service, prefix: []const u8) ![]const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
-    for (try latestUnder(a, prefix)) |f| {
+    for (try latestUnder(a, svc, prefix)) |f| {
         const o = outpointOfName(f.name) orelse return error.BadEvents;
         if (!standing(try outputFactOf(f.record))) continue;
         try out.append(a, try a.dupe(u8, &opKey(o.txid, o.vout)));
@@ -1088,8 +1074,8 @@ fn standingUnder(a: Allocator, prefix: []const u8) ![]const []const u8 {
     return out.items;
 }
 
-fn allDeploys(a: Allocator) ![]const []const u8 {
-    return standingUnder(a, try std.fmt.allocPrint(a, "{s}/topic/output/", .{app_name}));
+fn allDeploys(a: Allocator, svc: *Service) ![]const []const u8 {
+    return standingUnder(a, svc, try std.fmt.allocPrint(a, "{s}/topic/output/", .{svc.app}));
 }
 
 /// The token keys `q` finds (0.16.0), possibly one twice: the deploys whose symbol starts with `q`
@@ -1097,10 +1083,10 @@ fn allDeploys(a: Allocator) ![]const []const u8 {
 /// prefix of `q` lower-cased, not reverted), and the deploys whose token id text `<txid>_<vout>`
 /// starts with `q` (the `<app>/topic/output/<hex>` names under `q`'s leading lower-case hex digits,
 /// up to 64).
-pub fn searched(a: Allocator, q: []const u8) ![]const []const u8 {
+pub fn searched(a: Allocator, svc: *Service, q: []const u8) ![]const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
     const lower = try std.ascii.allocLowerString(a, q);
-    for (try latestUnder(a, try symbolPrefix(a, lower))) |f| {
+    for (try latestUnder(a, svc, try symbolPrefix(a, svc.app, lower))) |f| {
         if (isReverted(f.record)) continue;
         const o = outpointOfName(f.name) orelse return error.BadEvents;
         try out.append(a, try a.dupe(u8, &opKey(o.txid, o.vout)));
@@ -1108,7 +1094,7 @@ pub fn searched(a: Allocator, q: []const u8) ![]const []const u8 {
     // The id side: the txid's hex digits `q` begins with, as a prefix of the output facts' names.
     const n = @min(q.len, 64);
     for (q[0..n]) |ch| if (!(std.ascii.isDigit(ch) or (ch >= 'a' and ch <= 'f'))) return out.items;
-    for (try standingUnder(a, try std.fmt.allocPrint(a, "{s}/topic/output/{s}", .{ app_name, q[0..n] }))) |k| {
+    for (try standingUnder(a, svc, try std.fmt.allocPrint(a, "{s}/topic/output/{s}", .{ svc.app, q[0..n] }))) |k| {
         const text = try std.fmt.allocPrint(a, "{s}_{d}", .{ &std.fmt.bytesToHex(k[0..32].*, .lower), std.mem.readInt(u32, k[32..36], .big) });
         if (std.mem.startsWith(u8, text, q)) try out.append(a, k);
     }
@@ -1117,13 +1103,14 @@ pub fn searched(a: Allocator, q: []const u8) ![]const []const u8 {
 
 /// The `ids` form (0.14.0, D17): one row per id in the query's order, the token as listed when the
 /// discovery topic admitted its deploy, else `{tokenId, listed: false}`.
-pub fn byIds(a: Allocator, s: c.store.Store, overlay_state: ?[]const u8, ids: []const []const u8) ![]const Row {
+pub fn byIds(a: Allocator, svc: *Service, overlay_state: ?[]const u8, ids: []const []const u8) ![]const Row {
+    const s = svc.store;
     var placed = try Placed.load(a, s, overlay_state);
     const out = try a.alloc(Row, ids.len);
     for (ids, out) |id, *r| {
         r.* = .{ .unknown = id };
         const key = tokenKeyOf(id) orelse continue;
-        if (!(try isListed(a, s, &key))) continue;
+        if (!(try isListed(a, svc, &key))) continue;
         if (try listedOf(a, s, &key, &placed)) |l| r.* = .{ .listed = l };
     }
     return out;
@@ -1159,12 +1146,12 @@ fn jsonOf(a: Allocator, v: anytype) ![]const u8 {
 /// `q`, `after`; an `after` not on the list 400) → 200
 /// `[{tokenId, topic, sym, dec, iconUrl?, txid, vout}]`; `?ids=a,b` → one row per id in order,
 /// `{tokenId, listed: false}` for an id not listed; 400 `{status: "error", message}` on a bad query.
-/// `Cache-Control: public, max-age=5`. `deploys_state` is the program's index's record (the head
-/// `<app>/ls_color`), `chain_state` the head `chain/state`'s.
-pub fn tokensRoute(a: Allocator, s: c.store.Store, deploys_state: ?[]const u8, chain_state: ?[]const u8, overlay_state: ?[]const u8, req: Value) !Value {
+/// `Cache-Control: public, max-age=5`. `svc` the program's index (the head `<app>/ls_color`) with its
+/// kernel, `chain_state` the head `chain/state`'s.
+pub fn tokensRoute(a: Allocator, svc: *Service, chain_state: ?[]const u8, overlay_state: ?[]const u8, req: Value) !Value {
     const q = parseTokensQuery(a, req.getText("query") orelse "", req.getBytes("body") orelse "") catch
         return respond(a, 400, "{\"status\":\"error\",\"message\":\"the query is {limit?: 1..100, skip?: 0..100000}, in the query string or a JSON body, with q=<text> (at most 100 bytes) and after=<txid>_<vout> (not beside skip) in the query string; or ids=<txid>_<vout>,… in the query string alone\"}");
-    const body = if (q.ids) |ids| try jsonOf(a, try byIds(a, s, overlay_state, ids)) else try jsonOf(a, tokens(a, s, deploys_state, chain_state, overlay_state, q) catch |e| switch (e) {
+    const body = if (q.ids) |ids| try jsonOf(a, try byIds(a, svc, overlay_state, ids)) else try jsonOf(a, tokens(a, svc, chain_state, overlay_state, q) catch |e| switch (e) {
         error.UnknownAfter => return respond(a, 400, "{\"status\":\"error\",\"message\":\"after: no such token on the list\"}"),
         else => return e,
     });
@@ -1216,17 +1203,17 @@ const not_found = "{\"status\":\"error\",\"message\":\"not found\"}";
 ///   `<token>/deploy`  200 the deploy's Atomic BEEF from the chain state, `application/octet-stream`; the same rule
 /// `<token>` exactly `<txid>_<vout>`, its deploy one the discovery topic admitted; anything else 404
 /// (a BRC-161 JSON deploy has no `/icon`: its `iconUrl` is its http(s) icon string).
-pub fn tokenRoute(a: Allocator, s: c.store.Store, deploys_state: ?[]const u8, chain_state: ?[]const u8, overlay_state: ?[]const u8, req: Value) !Value {
+pub fn tokenRoute(a: Allocator, svc: *Service, chain_state: ?[]const u8, overlay_state: ?[]const u8, req: Value) !Value {
+    const s = svc.store;
     const tp = tokenPathOf(restOf(req) orelse "") orelse return respond(a, 404, not_found);
-    var svc = try Service.loadIndex(a, s, service_name, index_name, spec.maps, deploys_state);
     // 0.15.0: the token's holders, from the balance table its own topic feeds (no deploy needed here).
     if (tp.part == .holders) {
         const hq = parseHoldersQuery(req.getText("query") orelse "") catch
             return respond(a, 400, "{\"status\":\"error\",\"message\":\"the query is limit=1..100, skip=0..100000\"}");
         const ch = try c.open(a, s, chain_state, .main);
-        return respondWith(a, 200, "application/json", cache_state, try holdersJson(a, &svc, &tp.key, ch.network, hq));
+        return respondWith(a, 200, "application/json", cache_state, try holdersJson(a, svc, &tp.key, ch.network, hq));
     }
-    if (!(try isListed(a, s, &tp.key))) return respond(a, 404, not_found);
+    if (!(try isListed(a, svc, &tp.key))) return respond(a, 404, not_found);
     var placed = try Placed.load(a, s, overlay_state);
     const d = (try deployOf(a, s, &tp.key, &placed)) orelse return respond(a, 404, not_found);
     if (tp.part == .detail) return respondWith(a, 200, "application/json", cache_state, try jsonOf(a, d.listed));
@@ -1317,34 +1304,36 @@ fn appOfRead(a: Allocator, s: c.store.Store, req: Value) ![]const u8 {
 const sk = @import("overlay_sk");
 var delegate = false;
 
-/// The kernel's `events` import (skein docs/VM.md "The event index"; skein-overlay 0.25.1's vm.zig
-/// declares none).
-extern "skein" fn events(q: [*]const u8, len: u32, out: [*]u8, cap: u32) i32;
-
-fn eventsImport(a: Allocator, query: Value) anyerror!Value {
-    const q = try c.cbor.encode(a, query);
-    return c.cbor.decode(a, try sk.result(a, events, .{ q.ptr, @as(u32, @intCast(q.len)) }));
-}
+/// The VM's kernel for a read route's service (skein-overlay 0.27.0 vm.zig `events` / `emitEvent`,
+/// the imports `lookup.main` gives a hook's).
+const ReadKernel = struct {
+    var dummy: u8 = 0;
+    fn emit(_: *anyopaque, a: Allocator, ev: Value) anyerror!void {
+        _ = try sk.emitEvent(a, ev);
+    }
+    fn events(_: *anyopaque, a: Allocator, q: Value) anyerror!Value {
+        return sk.events(a, q);
+    }
+    const kernel: lookup.Kernel = .{ .ctx = &dummy, .emitFn = emit, .eventsFn = events };
+};
 
 fn run(a: Allocator) anyerror!void {
     const in = try sk.input(a);
     const func = in.getText("fn") orelse "";
     // 0.17.0: the step's time for the hooks (a burn's `at`).
     now_ms = in.getUint("now") orelse 0;
-    // 0.18.0: the event index, and the app every name it reads or emits is under.
-    events_fn = &eventsImport;
     const route = if (eql(u8, func, "tokens")) &tokensRoute else if (eql(u8, func, "token")) &tokenRoute else {
-        if (sk.callArg(a, in)) |arg| try setApp(lookup.appOf(arg)) else |_| {}
         delegate = true;
         return;
     };
     const req = try sk.callArg(a, in);
     const s = sk.store();
     const app = try appOfRead(a, s, req);
-    try setApp(app);
-    const deploys = try sk.head(a, try lookup.headName(a, app, index_name));
+    var svc = try Service.loadIndex(a, s, service_name, index_name, spec.maps, try sk.head(a, try lookup.headName(a, app, index_name)));
+    svc.kernel = ReadKernel.kernel;
+    svc.app = app;
     const overlay = try sk.head(a, try std.fmt.allocPrint(a, "{s}/state", .{app}));
-    const out = try route(a, s, deploys, try sk.head(a, lookup.chain_head), overlay, req);
+    const out = try route(a, &svc, try sk.head(a, lookup.chain_head), overlay, req);
     // A read route's filter (shruggr/skein#143): the http answer as the filter's `{answer: …}`.
     try sk.answer(a, if (isFilter(in)) try asFilterAnswer(a, out) else out);
 }

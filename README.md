@@ -428,21 +428,15 @@ not its entry, which re-exports every action. The bundle is about 2 MB
 (480 KB gzipped). Most of it is `@1sat/connect`, which ships as one
 prebuilt 2 MB file. No analytics.
 
-## Known limits (0.18.0)
+## Known limits (0.19.0)
 
 - The overlay's output facts, `<app>/topic/output/<txid>.<vout>`, name no topic (skein-overlay
   0.26.0). On an instance serving a token topic, the token reads (`/<app>/tokens`, `/<app>/<token>…`)
   list that token's own deploy, which its topic admits; before 0.18.0 only `tm_color` fed the list.
   On an instance serving several topics, the discovery form of BRC-207 answers a deploy any topic
   admitted. BRC-207's token form checks the asset by parsing the stored transaction.
-- Each hook reads only facts from earlier steps (a step does not see its own emits). If one
-  transaction is admitted under two topics of one instance, both hooks run in one step. The native
-  tests run one hook per step instead, so they order the token topic before `tm_color`.
-- OPEN DEFECT (reproduced in 0.18.1, not fixed): a parent and its child admitted in one overlay step
-  (skein-overlay `admitHeard` admits every item the chain state takes in the step that heard it): the
-  child's `spent` and burn check read the parent's output fact, emitted in that same step and not yet
-  visible, so the parent's output is never debited (balances and supply stay too high) and a burn is
-  missed. The tests named `REPRODUCTION …` show it and are skipped.
+- Requires skein 0.8.0 (a step reads its own events; branch `events-own-step` until tagged): a
+  parent and its child admitted in one overlay step are read like any other (`equiv/color-ledger.ts`).
 - Every token-list request reads every output fact's name, because the event read pages by place,
   not by name.
 
@@ -474,9 +468,9 @@ checkout: `zig build --fork=../skein-overlay`.
 
 | | |
 |---|---|
-| this app, its programs and package | 0.18.1 (branch `repin-0.26.1`) |
+| this app, its programs and package | 0.19.0 (branch `ledger-0.19`) |
 | the pages | `@1sat/actions`, `@1sat/react`, `@1sat/connect`, `@1sat/templates` 0.1.0 (published; on `@bsv/sdk` 4), `@bsv/sdk` aliased to `npm:@bopen-io/sdk@4.0.1` and `@bsv/color-permission-module` to `npm:@bopen-io/color-permission-module@0.1.0` (the interim @bopen-io repack of ts-stack #1243 until upstream publishes; an npm `overrides` entry keeps one copy of `@bsv/sdk`), `web/package.json`, exact; skein's client at `web/lib/SKEIN_REV` (the build also needs the package `buffer` to resolve from that checkout, for its `web/shims/buffer.ts`: a `node_modules` there, or a link to `web/node_modules`). The committed `www/` is the 0.13.4 build (0.10.1's until then). |
-| skein-overlay | v0.26.1 by tag URL and hash in `build.zig.zon` (modules `topic`, `lookup`, `sk`); the engine in `bin/` is its build |
+| skein-overlay | v0.27.0 by tag URL and hash in `build.zig.zon` (modules `topic`, `lookup`, `sk`); the engine in `bin/` is its build |
 | skein-sdk | v0.21.0, through skein-overlay (modules `chain`, `sk`, `cbor`) |
 | requires | `chain/1` (shruggr/skein-chain 0.11.0) |
 | skein | log format 10, the BEEF envelope beside the pointer record (shruggr/skein#146); the routes / filters / roles manifest (shruggr/skein#143; 0.8.0: `dispatch` and `reads` became `routes`, the `register` box root's, the reads read routes whose filters answer) |
