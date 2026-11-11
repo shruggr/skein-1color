@@ -4,6 +4,18 @@ Released versions of skein-1color (skein-mandala until 0.9.2). Versions
 before 0.10.0 are in the git history (each release commit names what
 changed).
 
+## 0.20.1 (2026-11-11)
+
+Re-pin onto skein-overlay 0.28.1 (David 2026-11-11: a transaction a submission carries raw that the
+chain state holds, not its subject, is read as its txid-only entry — not script-checked, not judged,
+nothing stored again; a proof it carries that we lack is still saved; skein-sdk 0.22.1, skein-chain
+0.12.1).
+
+- `build.zig.zon` the overlay's branch commit URL and hash (to its v0.28.1 tag at release);
+  `bin/overlay.wasm` its committed engine; `bin/color-topic.wasm` and `bin/color-lookup.wasm` rebuilt;
+  `etc/app.json` 0.20.1; `equiv/color-ledger.ts` the version check. No logic change here; no state
+  shape change.
+
 ## 0.20.0 (2026-11-11)
 
 Re-pin onto skein-overlay 0.28.0 (David 2026-11-11: a submission is admitted in the step that hands it

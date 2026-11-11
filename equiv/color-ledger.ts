@@ -151,7 +151,7 @@ try {
   const chainDir = copyOf(dirOf("SKEIN_CHAIN_DIR"), join(home, "chain"));
   const mf = JSON.parse(readFileSync(join(colorDir, "etc/app.json"), "utf8")) as { version: string };
   const cmf = JSON.parse(readFileSync(join(chainDir, "etc/app.json"), "utf8")) as { version: string };
-  check(mf.version === "0.20.0" && cmf.version === "0.12.0", `skein-1color ${mf.version}, skein-chain ${cmf.version}`);
+  check(mf.version === "0.20.1" && cmf.version === "0.12.1", `skein-1color ${mf.version}, skein-chain ${cmf.version}`);
 
   await r.listen(0);
   await r.hydrate(H);
