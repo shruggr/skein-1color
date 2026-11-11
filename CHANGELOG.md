@@ -11,7 +11,7 @@ chain state holds, not its subject, is read as its txid-only entry — not scrip
 nothing stored again; a proof it carries that we lack is still saved; skein-sdk 0.22.1, skein-chain
 0.12.1).
 
-- `build.zig.zon` the overlay's branch commit URL and hash (to its v0.28.1 tag at release);
+- `build.zig.zon` the overlay's tag URL and hash (v0.28.1);
   `bin/overlay.wasm` its committed engine; `bin/color-topic.wasm` and `bin/color-lookup.wasm` rebuilt;
   `etc/app.json` 0.20.1; `equiv/color-ledger.ts` the version check. No logic change here; no state
   shape change.
