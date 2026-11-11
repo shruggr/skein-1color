@@ -4,6 +4,20 @@ Released versions of skein-1color (skein-mandala until 0.9.2). Versions
 before 0.10.0 are in the git history (each release commit names what
 changed).
 
+## 0.20.0 (branch `one-step-0.20`, not released)
+
+Re-pin onto skein-overlay 0.28.0 (David 2026-11-11: a submission is admitted in the step that hands it
+to the chain app; no thread per transaction — the engine's `chainTx` subscription; skein-sdk 0.22.0,
+skein-chain 0.12.0: an instance hears only rejected or mined).
+
+- `build.zig.zon` the overlay's commit URL and hash (fef3dd4, until tagged); `bin/overlay.wasm` its
+  committed engine; `bin/color-topic.wasm` and `bin/color-lookup.wasm` rebuilt (unchanged bytes);
+  `etc/app.json` 0.20.0; `equiv/color-ledger.ts` the version check. No logic change: the topic and
+  lookup contracts are unchanged, and the lookup's hooks run as before (called by the engine in the
+  admitting step, now the intake step).
+- Release notes: a FRESH HOME is required (skein-overlay 0.28.0's: threads a 0.27.x engine left
+  resting on `chain/tx/<txid>` end in error on their next wake).
+
 ## 0.19.1 (2026-11-11)
 
 Re-pin: skein-overlay v0.27.0 → v0.27.1 (skein-sdk v0.21.3 through it: a held transaction a BEEF

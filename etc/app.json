@@ -1,7 +1,7 @@
 {
   "kind": "app",
   "name": "1color",
-  "version": "0.19.1",
+  "version": "0.20.0",
   "programs": {
     "overlay": "bin/overlay.wasm",
     "color-topic": "bin/color-topic.wasm",

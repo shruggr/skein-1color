@@ -468,11 +468,11 @@ checkout: `zig build --fork=../skein-overlay`.
 
 | | |
 |---|---|
-| this app, its programs and package | 0.19.1 |
+| this app, its programs and package | 0.20.0 (branch `one-step-0.20`) |
 | the pages | `@1sat/actions`, `@1sat/react`, `@1sat/connect`, `@1sat/templates` 0.1.0 (published; on `@bsv/sdk` 4), `@bsv/sdk` aliased to `npm:@bopen-io/sdk@4.0.1` and `@bsv/color-permission-module` to `npm:@bopen-io/color-permission-module@0.1.0` (the interim @bopen-io repack of ts-stack #1243 until upstream publishes; an npm `overrides` entry keeps one copy of `@bsv/sdk`), `web/package.json`, exact; skein's client at `web/lib/SKEIN_REV` (the build also needs the package `buffer` to resolve from that checkout, for its `web/shims/buffer.ts`: a `node_modules` there, or a link to `web/node_modules`). The committed `www/` is the 0.13.4 build (0.10.1's until then). |
-| skein-overlay | v0.27.1 by tag URL and hash in `build.zig.zon` (modules `topic`, `lookup`, `sk`); the engine in `bin/` is its build |
-| skein-sdk | v0.21.3, through skein-overlay (modules `chain`, `sk`, `cbor`) |
-| requires | `chain/1` (shruggr/skein-chain 0.11.1) |
+| skein-overlay | 0.28.0 by commit fef3dd4 (branch `one-step-0.28`; rewrite to tag `v0.28.0` at release), URL and hash in `build.zig.zon` (modules `topic`, `lookup`, `sk`); the engine in `bin/` is its build |
+| skein-sdk | 0.22.0 (commit 1a6b875), through skein-overlay (modules `chain`, `sk`, `cbor`) |
+| requires | `chain/1` (shruggr/skein-chain 0.12.0) |
 | skein | log format 10, the BEEF envelope beside the pointer record (shruggr/skein#146); the routes / filters / roles manifest (shruggr/skein#143; 0.8.0: `dispatch` and `reads` became `routes`, the `register` box root's, the reads read routes whose filters answer) |
 
 The token library and its tests moved here from amm-poc
